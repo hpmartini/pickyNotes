@@ -1,6 +1,6 @@
 import { access } from "node:fs/promises";
 import { ulid } from "ulid";
-import type { CaptureInput, SearchHit, WebhookEvent } from "@pickynotes/shared";
+import type { CaptureInput, MailCapture, SearchHit, WebhookEvent } from "@pickynotes/shared";
 import { mentionsClaude } from "./claude-instructions.js";
 import type { EmbeddingProvider, LlmProvider, TranscriptionProvider } from "./providers.js";
 import type { NoteRow, Repo } from "./repo.js";
@@ -35,9 +35,9 @@ export async function emit(deps: Deps, event: WebhookEvent["event"], noteId: str
 }
 
 /** Writes raw/<id>.md and kicks off the async pipeline. Shared by text captures and finished voice/file jobs. */
-export async function finishNote(deps: Deps, p: { id: string; body: string; source: NoteRow["source"]; kind: string; title?: string; createdAt: string; clientId?: string }) {
+export async function finishNote(deps: Deps, p: { id: string; body: string; source: NoteRow["source"]; kind: string; title?: string; createdAt: string; clientId?: string; frontmatter?: Record<string, unknown> }) {
   const ignored = p.source === "imported" && mentionsClaude(p.body);
-  const fm = { id: p.id, kind: p.kind, source: p.source, created: p.createdAt, status: "pending", tags: [] as string[], ...(ignored ? { claude: "ignored" } : {}) };
+  const fm = { id: p.id, kind: p.kind, source: p.source, created: p.createdAt, status: "pending", tags: [] as string[], ...p.frontmatter, ...(ignored ? { claude: "ignored" } : {}) };
   let resumed = false;
   const path = await deps.vault.writeNew(p.id, fm, p.body).catch((e) => {
     if (e?.code !== "EEXIST") throw e;
@@ -92,6 +92,17 @@ export async function capture(deps: Deps, input: CaptureInput): Promise<{ id: st
   const job = { noteId: id, attachment, filename, mime: input.mime ?? "application/octet-stream", source, kind: input.kind, caption: input.text ?? "", createdAt };
   if (!dup) await deps.repo.upsertNote({ id, path: `raw/${id}.md`, title: filename, body: "", tags: [], summary: null, source, status: "pending", contentHash: null, createdAt, clientId: input.clientId });
   await deps.queue.send(input.kind === "voice" ? "transcribe" : "extract", job);
+  return { id };
+}
+
+/** Forwarded mail → imported note. Sender in frontmatter and body (so /context?sender= finds it); messageId makes redelivery idempotent. */
+export async function captureMail(deps: Deps, m: MailCapture): Promise<{ id: string }> {
+  const clientId = m.messageId ? `mail:${m.messageId}` : undefined;
+  const dup = clientId ? await deps.repo.getNoteByClientId(clientId) : null;
+  const body = `Von: ${m.from}\n${m.subject ? `Betreff: ${m.subject}\n` : ""}\n${m.text}`;
+  const id = dup?.id ?? ulid();
+  // Resumes like a text capture when a redelivery finds a half-finished first attempt.
+  await finishNote(deps, { id, body, source: "imported", kind: "mail", title: m.subject || titleOf(m.text, "Mail"), createdAt: dup?.createdAt ?? new Date().toISOString(), clientId, frontmatter: { from: m.from, ...(m.subject ? { subject: m.subject } : {}) } });
   return { id };
 }
 

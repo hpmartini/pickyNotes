@@ -84,6 +84,17 @@ function contract(name: string, make: () => Promise<Repo>, skip = false) {
       expect(await repo.getNote("u3")).toMatchObject({ path: "wiki/u1.md" });
     });
 
+    it("suggestions: idempotent per (note, title), filtered by status, decision recorded", async () => {
+      expect(await repo.addSuggestion({ id: "s1", noteId: "a", title: "Anrufen", detail: "heute" })).toBe(true);
+      expect(await repo.addSuggestion({ id: "s2", noteId: "a", title: "Anrufen", detail: "" })).toBe(false);
+      expect(await repo.addSuggestion({ id: "s3", noteId: "b", title: "Anrufen", detail: "" })).toBe(true);
+      expect((await repo.listSuggestions("pending")).map((s) => s.id)).toEqual(["s1", "s3"]);
+      expect(await repo.setSuggestionStatus("s1", "accepted")).toMatchObject({ id: "s1", noteId: "a", detail: "heute", status: "accepted" });
+      expect(await repo.setSuggestionStatus("nope", "dismissed")).toBeNull();
+      expect((await repo.listSuggestions("pending")).map((s) => s.id)).toEqual(["s3"]);
+      expect((await repo.listSuggestions("accepted")).map((s) => s.id)).toEqual(["s1"]);
+    });
+
     it("looks up devices by token hash and de-duplicates conflicts", async () => {
       await repo.createDevice("d", "mac", "hash1");
       expect(await repo.findDeviceByTokenHash("hash1")).toMatchObject({ id: "d" });

@@ -6,10 +6,10 @@ import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import type { Context, MiddlewareHandler } from "hono";
 import { ulid } from "ulid";
-import { CaptureAccepted, CaptureInput, DeviceCreate, DeviceCreated, Note, SearchResponse, WebhookCreate } from "@pickynotes/shared";
+import { CaptureAccepted, CaptureInput, DeviceCreate, DeviceCreated, MailCapture, Note, SearchResponse, Suggestion, SuggestionStatus, WebhookCreate } from "@pickynotes/shared";
 import { reindex } from "./indexer.js";
 import { isTailscaleOrAllowed } from "./net.js";
-import { BadCaptureError, Deps, PayloadTooLargeError, capture, hybridSearch } from "./services.js";
+import { BadCaptureError, Deps, PayloadTooLargeError, capture, captureMail, hybridSearch } from "./services.js";
 
 export interface AppDeps extends Deps {
   adminAllowlist: string[];
@@ -32,6 +32,12 @@ const routes = {
     request: { body: body(CaptureInput) },
     responses: { 202: res("Accepted", CaptureAccepted), 400: res("Invalid", Err), 401: res("Unauthorized", Err), 413: res("Too large", Err), 429: res("Rate limited", Err) },
   }),
+  captureMail: createRoute({
+    method: "post", path: "/captures/mail", security: secured,
+    summary: "Mail intake for a mail-to-webhook service (device token). The mail becomes an imported note: @claude inside is never executed; the sender is stored and found via GET /context?sender=.",
+    request: { body: body(MailCapture) },
+    responses: { 202: res("Accepted", CaptureAccepted), 400: res("Invalid", Err), 401: res("Unauthorized", Err), 413: res("Too large", Err), 429: res("Rate limited", Err) },
+  }),
   note: createRoute({
     method: "get", path: "/notes/{id}", security: secured,
     request: { params: z.object({ id: z.string() }) },
@@ -46,6 +52,21 @@ const routes = {
     method: "get", path: "/context", security: secured, summary: "Notes relevant to a repo / event / sender.",
     request: { query: z.object({ repo: z.string().optional(), event: z.string().optional(), sender: z.string().optional(), limit: z.coerce.number().int().min(1).max(50).default(8) }) },
     responses: { 200: res("Hits", SearchResponse), 400: res("Invalid", Err), 401: res("Unauthorized", Err) },
+  }),
+  suggestions: createRoute({
+    method: "get", path: "/suggestions", security: secured, summary: "Follow-up proposals (tasks, appointments, issues) the curator found. Proposals only.",
+    request: { query: z.object({ status: SuggestionStatus.default("pending") }) },
+    responses: { 200: res("Suggestions", z.object({ suggestions: z.array(Suggestion) })), 401: res("Unauthorized", Err) },
+  }),
+  suggestionAccept: createRoute({
+    method: "post", path: "/suggestions/{id}/accept", security: secured, summary: "Mark a suggestion as accepted. Only records the decision: never executes anything (no task, mail, appointment or issue is created).",
+    request: { params: z.object({ id: z.string() }) },
+    responses: { 200: res("Updated", Suggestion), 404: res("Not found", Err), 401: res("Unauthorized", Err) },
+  }),
+  suggestionDismiss: createRoute({
+    method: "post", path: "/suggestions/{id}/dismiss", security: secured, summary: "Mark a suggestion as dismissed. Only records the decision; never executes anything.",
+    request: { params: z.object({ id: z.string() }) },
+    responses: { 200: res("Updated", Suggestion), 404: res("Not found", Err), 401: res("Unauthorized", Err) },
   }),
   deviceCreate: createRoute({
     method: "post", path: "/admin/devices", summary: "Create a device token (shown once). Tailscale/allowlist only.",
@@ -94,7 +115,9 @@ export function createApp(deps: AppDeps) {
   // Rate limit before auth so token guessing is throttled too.
   app.use("/captures", rateLimiter({ windowMs: 60_000, limit: deps.rateLimitPerMin, keyGenerator: (c) => clientIp(c) ?? "unknown", standardHeaders: "draft-6" }));
   app.use("/captures", bodyLimit({ maxSize: Math.ceil(deps.maxAttachmentBytes * 1.4) + 1_000_000, onError: (c) => c.json({ error: "payload too large" }, 413) }));
-  for (const p of ["/captures", "/notes/*", "/search", "/context"]) app.use(p, auth);
+  app.use("/captures/mail", rateLimiter({ windowMs: 60_000, limit: deps.rateLimitPerMin, keyGenerator: (c) => clientIp(c) ?? "unknown", standardHeaders: "draft-6" }));
+  app.use("/captures/mail", bodyLimit({ maxSize: 2_000_000, onError: (c) => c.json({ error: "payload too large" }, 413) }));
+  for (const p of ["/captures", "/captures/mail", "/notes/*", "/search", "/context", "/suggestions", "/suggestions/*"]) app.use(p, auth);
   app.use("/admin/*", admin);
 
   app.onError((e, c) => {
@@ -106,6 +129,7 @@ export function createApp(deps: AppDeps) {
 
   app.openapi(routes.health, (c) => c.json({ ok: true }, 200));
   app.openapi(routes.capture, async (c) => c.json(await capture(deps, c.req.valid("json")), 202));
+  app.openapi(routes.captureMail, async (c) => c.json(await captureMail(deps, c.req.valid("json")), 202));
   app.openapi(routes.note, async (c) => {
     const n = await deps.repo.getNote(c.req.valid("param").id);
     if (!n) return c.json({ error: "not found" }, 404);
@@ -122,6 +146,12 @@ export function createApp(deps: AppDeps) {
     if (!q) return c.json({ error: "repo, event or sender required" }, 400);
     return c.json({ hits: await hybridSearch(deps, q, limit) }, 200);
   });
+  app.openapi(routes.suggestions, async (c) => c.json({ suggestions: await deps.repo.listSuggestions(c.req.valid("query").status) }, 200));
+  for (const [route, status] of [[routes.suggestionAccept, "accepted"], [routes.suggestionDismiss, "dismissed"]] as const)
+    app.openapi(route, async (c) => {
+      const s = await deps.repo.setSuggestionStatus(c.req.valid("param").id, status);
+      return s ? c.json(s, 200) : c.json({ error: "not found" }, 404);
+    });
   app.openapi(routes.deviceCreate, async (c) => {
     const { name } = c.req.valid("json");
     const token = "pk_" + randomBytes(32).toString("base64url");

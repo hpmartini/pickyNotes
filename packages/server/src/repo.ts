@@ -1,4 +1,4 @@
-import type { Note } from "@pickynotes/shared";
+import type { Note, Suggestion, SuggestionStatus } from "@pickynotes/shared";
 
 export interface NoteRow extends Note {
   contentHash: string | null;
@@ -58,6 +58,12 @@ export interface Repo {
   claimInstruction(i: InstructionRow): Promise<boolean>;
   updateInstruction(id: string, patch: Partial<Pick<InstructionRow, "stage" | "status" | "result">>): Promise<void>;
   getInstructions(noteId: string): Promise<InstructionRow[]>;
+
+  /** Idempotent per (noteId, title): true only if the suggestion is new. */
+  addSuggestion(s: Omit<Suggestion, "status" | "createdAt">): Promise<boolean>;
+  listSuggestions(status: SuggestionStatus): Promise<Suggestion[]>;
+  /** Records a decision only; returns null for an unknown id. */
+  setSuggestionStatus(id: string, status: SuggestionStatus): Promise<Suggestion | null>;
 
   recordConflict(path: string, kind: string, detail?: string): Promise<void>;
   listConflicts(): Promise<{ path: string; kind: string; detail: string | null }[]>;

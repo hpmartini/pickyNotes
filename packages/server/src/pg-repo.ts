@@ -2,6 +2,7 @@ import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import pg from "pg";
+import type { Suggestion, SuggestionStatus } from "@pickynotes/shared";
 import type { Device, InstructionRow, NoteRow, NoteUpsert, Repo, Webhook } from "./repo.js";
 
 const COLS = "id, path, title, body, tags, summary, source, status, content_hash, client_id, created_at";
@@ -18,7 +19,9 @@ const toNote = (r: any): NoteRow => ({
   clientId: r.client_id,
   createdAt: new Date(r.created_at).toISOString(),
 });
-const vec = (v: number[]) => `[${v.join(",")}]`;
+const SUGGESTION_COLS = "id, note_id, title, detail, status, created_at";
+const toSuggestion = (r: any): Suggestion => ({ id: r.id, noteId: r.note_id, title: r.title, detail: r.detail, status: r.status, createdAt: new Date(r.created_at).toISOString() });
+const vec =(v: number[]) => `[${v.join(",")}]`;
 
 export async function migrate(pool: pg.Pool) {
   const dir = path.join(path.dirname(fileURLToPath(import.meta.url)), "../migrations");
@@ -154,6 +157,18 @@ export class PgRepo implements Repo {
   async getInstructions(noteId: string): Promise<InstructionRow[]> {
     const r = await this.pool.query("SELECT id, note_id, instruction_hash, status, stage, result FROM claude_instructions WHERE note_id=$1", [noteId]);
     return r.rows.map((x) => ({ id: x.id, noteId: x.note_id, hash: x.instruction_hash, status: x.status, stage: x.stage, result: x.result }));
+  }
+
+  async addSuggestion(s: Omit<Suggestion, "status" | "createdAt">) {
+    const r = await this.pool.query("INSERT INTO suggestions (id, note_id, title, detail) VALUES ($1,$2,$3,$4) ON CONFLICT (note_id, title) DO NOTHING", [s.id, s.noteId, s.title, s.detail]);
+    return r.rowCount === 1;
+  }
+  async listSuggestions(status: SuggestionStatus) {
+    return (await this.pool.query(`SELECT ${SUGGESTION_COLS} FROM suggestions WHERE status=$1 ORDER BY created_at, id`, [status])).rows.map(toSuggestion);
+  }
+  async setSuggestionStatus(id: string, status: SuggestionStatus) {
+    const r = await this.pool.query(`UPDATE suggestions SET status=$2 WHERE id=$1 RETURNING ${SUGGESTION_COLS}`, [id, status]);
+    return r.rows[0] ? toSuggestion(r.rows[0]) : null;
   }
 
   async recordConflict(p: string, kind: string, detail?: string) {

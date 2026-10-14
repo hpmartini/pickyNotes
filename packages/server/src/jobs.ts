@@ -1,4 +1,5 @@
 import { createHmac } from "node:crypto";
+import { ulid } from "ulid";
 import { z } from "zod";
 import { parseInstructions, readClaudeBlock, upsertCallout, type InstructionStatus } from "./claude-instructions.js";
 import { Deps, JobName, emit, finishNote, hybridSearch, titleOf } from "./services.js";
@@ -89,7 +90,11 @@ export const handlers: Record<JobName, (deps: Deps, p: Payload) => Promise<void>
     }));
     await syncRow(deps, written, { status: "curated", summary: out.summary, tags, title: out.title ?? note.title });
     await emit(deps, "note.curated", note.id, { tags });
-    for (const s of out.suggestions) await emit(deps, "suggestion.created", note.id, s);
+    // Proposals only: stored for a human decision, never executed. Idempotent per (note, title), so a retry emits only what is new.
+    for (const s of out.suggestions) {
+      const id = ulid();
+      if (await deps.repo.addSuggestion({ id, noteId: note.id, title: s.title, detail: s.detail })) await emit(deps, "suggestion.created", note.id, { id, ...s });
+    }
   },
 
   /**

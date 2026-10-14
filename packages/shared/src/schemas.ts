@@ -60,6 +60,29 @@ export const WebhookEvent = z.object({
 });
 export type WebhookEvent = z.infer<typeof WebhookEvent>;
 
+export const SuggestionStatus = z.enum(["pending", "accepted", "dismissed"]);
+export type SuggestionStatus = z.infer<typeof SuggestionStatus>;
+/** A follow-up proposal (task/appointment/issue). Accepting or dismissing only records the decision; nothing is executed. */
+export const Suggestion = z.object({
+  id: z.string(),
+  noteId: z.string(),
+  title: z.string(),
+  detail: z.string(),
+  status: SuggestionStatus,
+  createdAt: z.string(),
+});
+export type Suggestion = z.infer<typeof Suggestion>;
+
+/** Mail forwarded by a mail-to-webhook service. The content is always treated as imported (never executes @claude). */
+export const MailCapture = z.object({
+  from: z.string().email().max(320),
+  subject: z.string().max(998).default(""),
+  text: z.string().min(1).max(200_000),
+  /** Message-ID of the mail; makes redelivery by the mail service idempotent. */
+  messageId: z.string().min(1).max(200).optional(),
+});
+export type MailCapture = z.infer<typeof MailCapture>;
+
 export const DeviceCreate = z.object({ name: z.string().min(1).max(100) });
 export const DeviceCreated = z.object({ id: z.string(), name: z.string(), token: z.string() });
 export const WebhookCreate = z.object({ url: z.string().url(), secret: z.string().min(16).max(200) });

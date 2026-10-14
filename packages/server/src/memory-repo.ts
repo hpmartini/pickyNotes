@@ -1,3 +1,4 @@
+import type { Suggestion, SuggestionStatus } from "@pickynotes/shared";
 import type { Device, InstructionRow, NoteRow, NoteUpsert, Repo, Webhook } from "./repo.js";
 
 const tokens = (s: string) => s.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [];
@@ -15,6 +16,7 @@ export class MemoryRepo implements Repo {
   private hooks: Webhook[] = [];
   private usage = new Map<string, number>();
   private instr = new Map<string, InstructionRow>();
+  private suggestions = new Map<string, Suggestion>();
   private conflicts: { path: string; kind: string; detail: string | null }[] = [];
 
   async upsertNote(n: NoteUpsert) {
@@ -108,6 +110,21 @@ export class MemoryRepo implements Repo {
   }
   async getInstructions(noteId: string) {
     return [...this.instr.values()].filter((i) => i.noteId === noteId).map((i) => ({ ...i }));
+  }
+
+  async addSuggestion(s: Omit<Suggestion, "status" | "createdAt">) {
+    if ([...this.suggestions.values()].some((x) => x.noteId === s.noteId && x.title === s.title)) return false;
+    this.suggestions.set(s.id, { ...s, status: "pending", createdAt: new Date().toISOString() });
+    return true;
+  }
+  async listSuggestions(status: SuggestionStatus) {
+    return [...this.suggestions.values()].filter((s) => s.status === status);
+  }
+  async setSuggestionStatus(id: string, status: SuggestionStatus) {
+    const s = this.suggestions.get(id);
+    if (!s) return null;
+    s.status = status;
+    return { ...s };
   }
 
   async recordConflict(path: string, kind: string, detail?: string) {
