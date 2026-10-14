@@ -44,13 +44,13 @@ const routes = {
     responses: { 200: res("Note", Note), 404: res("Not found", Err), 401: res("Unauthorized", Err) },
   }),
   search: createRoute({
-    method: "get", path: "/search", security: secured, summary: "Hybrid search: FTS + trigram + vector, merged with RRF.",
-    request: { query: z.object({ q: z.string().min(1), limit: z.coerce.number().int().min(1).max(50).default(10) }) },
+    method: "get", path: "/search", security: secured, summary: "Hybrid search: FTS + trigram + vector, merged with RRF; optional LLM rerank of the top candidates.",
+    request: { query: z.object({ q: z.string().min(1), limit: z.coerce.number().int().min(1).max(50).default(10), rerank: z.enum(["true", "false"]).optional() }) },
     responses: { 200: res("Hits", SearchResponse), 401: res("Unauthorized", Err) },
   }),
   context: createRoute({
     method: "get", path: "/context", security: secured, summary: "Notes relevant to a repo / event / sender.",
-    request: { query: z.object({ repo: z.string().optional(), event: z.string().optional(), sender: z.string().optional(), limit: z.coerce.number().int().min(1).max(50).default(8) }) },
+    request: { query: z.object({ repo: z.string().optional(), event: z.string().optional(), sender: z.string().optional(), limit: z.coerce.number().int().min(1).max(50).default(8), rerank: z.enum(["true", "false"]).optional() }) },
     responses: { 200: res("Hits", SearchResponse), 400: res("Invalid", Err), 401: res("Unauthorized", Err) },
   }),
   suggestions: createRoute({
@@ -138,14 +138,14 @@ export function createApp(deps: AppDeps) {
     return c.json(note, 200);
   });
   app.openapi(routes.search, async (c) => {
-    const { q, limit } = c.req.valid("query");
-    return c.json({ hits: await hybridSearch(deps, q, limit) }, 200);
+    const { q, limit, rerank } = c.req.valid("query");
+    return c.json({ hits: await hybridSearch(deps, q, limit, undefined, rerank ? rerank === "true" : deps.rerankDefault) }, 200);
   });
   app.openapi(routes.context, async (c) => {
-    const { repo, event, sender, limit } = c.req.valid("query");
+    const { repo, event, sender, limit, rerank } = c.req.valid("query");
     const q = [repo, event, sender].filter(Boolean).join(" ");
     if (!q) return c.json({ error: "repo, event or sender required" }, 400);
-    return c.json({ hits: await hybridSearch(deps, q, limit) }, 200);
+    return c.json({ hits: await hybridSearch(deps, q, limit, undefined, rerank ? rerank === "true" : deps.rerankDefault) }, 200);
   });
   app.openapi(routes.suggestions, async (c) => c.json({ suggestions: await deps.repo.listSuggestions(c.req.valid("query").status) }, 200));
   for (const [route, status] of [[routes.suggestionAccept, "accepted"], [routes.suggestionDismiss, "dismissed"]] as const)

@@ -657,4 +657,44 @@ describe("OpenAPI", () => {
   });
 });
 
+describe("search reranking", () => {
+  const ids = async () => {
+    const a = (await (await post("/captures", { kind: "text", source: "typed", text: "Auto kaufen beim Händler" })).json()) as { id: string };
+    const b = (await (await post("/captures", { kind: "text", source: "typed", text: "Auto Reifen wechseln" })).json()) as { id: string };
+    await queue.drain(deps);
+    return [a.id, b.id];
+  };
+  const search = async (qs = "") => ((await (await call(`/search?q=Auto${qs}`)).json()) as { hits: { id: string }[] }).hits.map((h) => h.id);
+
+  it("keeps the RRF order by default and reorders with ?rerank=true", async () => {
+    await ids();
+    const plain = await search();
+    const reply = JSON.stringify([...plain].reverse());
+    const rerank = new FakeLlm(() => reply);
+    deps.llm = rerank;
+    expect(await search()).toEqual(plain);
+    expect(rerank.calls).toHaveLength(0);
+    expect(await search("&rerank=true")).toEqual([...plain].reverse());
+    expect(rerank.calls).toHaveLength(1);
+  });
+
+  it("falls back to the RRF order when the LLM fails or answers garbage", async () => {
+    await ids();
+    const plain = await search();
+    deps.llm = new FakeLlm(() => "kein JSON");
+    expect(await search("&rerank=true")).toEqual(plain);
+    deps.llm = { complete: async () => { throw new Error("daily limit"); } };
+    expect(await search("&rerank=true")).toEqual(plain);
+  });
+
+  it("uses SEARCH_RERANK as default and lets ?rerank=false override it", async () => {
+    await ids();
+    const plain = await search();
+    deps.llm = new FakeLlm(() => JSON.stringify([...plain].reverse()));
+    deps.rerankDefault = true;
+    expect(await search()).toEqual([...plain].reverse());
+    expect(await search("&rerank=false")).toEqual(plain);
+  });
+});
+
 vi.setConfig({ testTimeout: 15_000 });

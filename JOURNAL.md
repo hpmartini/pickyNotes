@@ -73,7 +73,7 @@ Auftrag: Briefing vollständig umsetzen, Nicht-Machbares in README („Vertagt�
 | `docker compose config` / `build` / Start | ok / ok / Health + OpenAPI ok |
 
 ## Vertagt (Details und Schritte in der README)
-VPS-Deployment (kein Zugang), `claude -p`-Login im Container, echte WhisperStorm-API (Format unbekannt; angenommener Vertrag + openai-Alternative), echter Whisper-Lauf, Tauri-Build/App-Lauf, Browser-Test des Editors, LLM-Reranking, Token-Scopes, Mobile/Share-Sheet/Push/Sortierdienst, Spec-Punkte 7a/7b/13b/17b (Spec nicht lesbar).
+VPS-Deployment (kein Zugang), `claude -p`-Login im Container, echte WhisperStorm-API (Format unbekannt; angenommener Vertrag + openai-Alternative), echter Whisper-Lauf, Tauri-Build/App-Lauf, automatisierter Browser-Test des Editors (einmal manuell geprüft, siehe Nachtrag 2), Token-Scopes, Mobile/Share-Sheet/Push/Sortierdienst, Spec-Punkte 7a/7b/13b/17b (Spec nicht lesbar).
 
 ## Offene Punkte für dich
 1. Spec-Punkte 7a/7b/13b/17b nennen/abgleichen.
@@ -83,6 +83,18 @@ VPS-Deployment (kein Zugang), `claude -p`-Login im Container, echte WhisperStorm
 5. VPS-Deployment nach den README-Schritten durchführen und `claude -p`-Login machen.
 6. Editor einmal von Hand im Tauri-Fenster prüfen (Listen, Tab, hell/dunkel).
 7. `package-lock.json`: neben `aws4fetch` wurden zwei veraltete Einträge (`@tauri-apps/plugin-dialog`, `plugin-shell`) entfernt, die in keiner `package.json` standen.
+
+## Nachtrag 2: Abschlussprüfung nach Stop-Hook-Einwand
+Der Einwand: Reranking, Browser-Prüfung und Re-Review des Sonnet-Fixes waren offen bzw. nur vertagt, obwohl machbar.
+- **Reranking umgesetzt** (`rerankByLlm` in `search.ts`, `?rerank=` an `/search` und `/context`, `SEARCH_RERANK`, CLI `--rerank`). Fallback auf RRF bei Fehler/Limit/Garbage; Kandidatentext ist Daten (kein Tool, nur bekannte ids zählen). Tests: 3 Unit + 3 App-Tests; server danach 79 grün (+10 PG übersprungen).
+- **Editor im echten Browser** (Playwright gegen Vite, Port 1420): zeichenweise getippt `- eins`, Enter, `zwei`, Enter, Tab, `eingerückt`. Ergebnis: Fokus blieb im Editor, Zeilen als Bullets gerendert (`•eins`, `•zwei`, `•eingerückt`), Markdown im Entwurf `- eins\n- zwei\n  - eingerückt`, Schriftfarbe rgb(36,41,47) auf Weiß, `data-theme=light`, Text nach Einstellungen→Erfassen unverändert. (Das Tauri-Fenster selbst konnte ich wegen gesperrtem Bildschirm nicht bedienen.)
+- **Unabhängiger Review** (separater Agent, read-only) über `5c6a8e5..HEAD`: kein Blocker, kein Major; Sonnet-Fix 6bcf65d korrekt (reine Typänderung). Minor, dokumentiert und nicht geändert:
+  1. Redelivery nach manuellem Verschieben im Vault vor `reindex` kann eine zweite `raw/<id>.md` anlegen (nur Duplikat, kein Datenverlust).
+  2. Curate: Crash zwischen `addSuggestion` und `emit` → `suggestion.created` höchstens einmal; abweichende LLM-Titel bei Re-Run können zusätzliche Vorschläge erzeugen (nur Vorschläge).
+  3. Große Capture ohne `clientId` kann nach `put` scheitern und ein verwaistes S3-Objekt hinterlassen.
+  4. `/captures`-Limit mit Object Store ca. 141 MB im Speicher (≈3× Spitze): VPS-Speicherlimit beachten.
+  5. `.env.example` enthält `change-me-*` als S3-Zugang: vor `--profile s3` ändern.
+- Prozess-Fehler von mir: Fokus-, Entwurf- und Farb-Bugs wurden erst auf Zuruf behoben; die Lauf-1/2-Gates (Textarea-Mock) konnten sie nicht fangen. Seitdem echter Editor im Test und Browser-Check.
 
 ## Nachtrag: Typecheck-Gate
 Nach den Redelivery-Tests (`app.test.ts`) war `npm run typecheck` rot (TS2322): `expectUntouched` erwartete `() => Promise<Response>`, `post` liefert aber `Response | Promise<Response>` (Hono `app.request`). Fix: Parametertyp auf `() => Response | Promise<Response>` geweitet. Danach grün: typecheck (alle Workspaces), `npm test` (server 73 + 10 PG übersprungen, desktop 17, cli 5, shared 2), PG auf `picky_test` 83/83.

@@ -457,7 +457,7 @@
             "bearerAuth": []
           }
         ],
-        "summary": "Hybrid search: FTS + trigram + vector, merged with RRF.",
+        "summary": "Hybrid search: FTS + trigram + vector, merged with RRF; optional LLM rerank of the top candidates.",
         "parameters": [
           {
             "schema": {
@@ -477,6 +477,18 @@
             },
             "required": false,
             "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            },
+            "required": false,
+            "name": "rerank",
             "in": "query"
           }
         ],
@@ -596,6 +608,18 @@
             },
             "required": false,
             "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true",
+                "false"
+              ]
+            },
+            "required": false,
+            "name": "rerank",
             "in": "query"
           }
         ],

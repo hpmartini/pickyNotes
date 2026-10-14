@@ -4,7 +4,7 @@ import type { CaptureInput, MailCapture, SearchHit, WebhookEvent } from "@pickyn
 import { mentionsClaude } from "./claude-instructions.js";
 import type { EmbeddingProvider, LlmProvider, TranscriptionProvider } from "./providers.js";
 import type { NoteRow, Repo } from "./repo.js";
-import { rrf } from "./search.js";
+import { rerankByLlm, rrf } from "./search.js";
 import type { ObjectStore } from "./object-store.js";
 import { readSummary, safeFilename, stripPickyBlocks, type Vault } from "./vault.js";
 
@@ -24,6 +24,8 @@ export interface Deps {
   /** Optional S3-compatible store for attachments above maxAttachmentBytes. */
   objectStore?: ObjectStore;
   fetch?: typeof fetch;
+  /** Default for the `rerank` query parameter of /search and /context. */
+  rerankDefault?: boolean;
 }
 
 export class PayloadTooLargeError extends Error {}
@@ -117,14 +119,20 @@ export async function captureMail(deps: Deps, m: MailCapture): Promise<{ id: str
   return { id };
 }
 
-export async function hybridSearch(deps: Pick<Deps, "repo" | "embedding">, q: string, limit = 10, exclude?: string): Promise<SearchHit[]> {
+const RERANK_CANDIDATES = 20;
+
+/** `rerank`: after RRF fusion, let the LLM reorder the top candidates (one call, counts against the daily limit). */
+export async function hybridSearch(deps: Pick<Deps, "repo" | "embedding" | "llm">, q: string, limit = 10, exclude?: string, rerank = false): Promise<SearchHit[]> {
   const vec = await deps.embedding.embed(q, "query");
   const [fts, trgm, vector] = await Promise.all([deps.repo.searchFts(q, 50), deps.repo.searchTrgm(q, 50), deps.repo.searchVector(vec, 50)]);
-  // shortcut: no LLM reranking yet (RRF only); add a rerank pass over the top N when quality demands it
-  const top = rrf([fts, trgm, vector]).filter((r) => r.id !== exclude).slice(0, limit);
+  const top = rrf([fts, trgm, vector]).filter((r) => r.id !== exclude).slice(0, rerank ? Math.max(limit, RERANK_CANDIDATES) : limit);
   const notes = new Map((await deps.repo.getNotes(top.map((t) => t.id))).map((n) => [n.id, n]));
-  return top.flatMap((t) => {
+  const hits = top.flatMap((t) => {
     const n = notes.get(t.id);
     return n ? [{ id: n.id, title: n.title, snippet: (n.summary ?? n.body).slice(0, 240), score: t.score, path: n.path, tags: n.tags }] : [];
   });
+  if (!rerank || hits.length < 2) return hits.slice(0, limit);
+  const order = await rerankByLlm(deps.llm, q, hits);
+  const rank = new Map((order ?? []).map((id, i) => [id, i]));
+  return (order ? [...hits].sort((a, b) => rank.get(a.id)! - rank.get(b.id)!) : hits).slice(0, limit);
 }

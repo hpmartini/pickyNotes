@@ -73,8 +73,9 @@ export function buildProgram(env: Env = {}) {
     .description("hybrid search")
     .option("--json", "raw JSON")
     .option("-n, --limit <n>", "max hits", "10")
-    .action(async (q: string[], o: { json?: boolean; limit: string }) => {
-      const { hits } = await client().search(q.join(" "), Number(o.limit));
+    .option("--rerank", "let the LLM reorder the top hits (slower, uses the daily limit)")
+    .action(async (q: string[], o: { json?: boolean; limit: string; rerank?: boolean }) => {
+      const { hits } = await client().search(q.join(" "), Number(o.limit), o.rerank ? true : undefined);
       out(o.json ? JSON.stringify(hits, null, 2) : formatHits(hits));
     });
 

@@ -30,6 +30,7 @@ const deps: Deps = {
   transcription: new WhisperTranscription({ url: config.whisperUrl, token: config.whisperToken, api: config.whisperApi, model: config.whisperModel }),
   queue,
   maxAttachmentBytes: config.maxAttachmentBytes,
+  rerankDefault: config.searchRerank,
   objectStore: config.s3 && new S3ObjectStore(config.s3),
 };
 

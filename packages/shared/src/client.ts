@@ -28,8 +28,8 @@ export function createClient({ baseUrl, token, fetch: f = globalThis.fetch }: Cl
   return {
     capture: (input: CaptureInput) =>
       call<{ id: string }>("/captures", { method: "POST", body: JSON.stringify(input) }),
-    search: (q: string, limit = 10) =>
-      call<{ hits: SearchHit[] }>(`/search?${qs({ q, limit: String(limit) })}`),
+    search: (q: string, limit = 10, rerank?: boolean) =>
+      call<{ hits: SearchHit[] }>(`/search?${qs({ q, limit: String(limit), rerank: rerank === undefined ? undefined : String(rerank) })}`),
     context: (c: ContextQuery) => call<{ hits: SearchHit[] }>(`/context?${qs(c)}`),
   };
 }

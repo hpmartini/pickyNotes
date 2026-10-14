@@ -13,6 +13,8 @@ const Env = z.object({
   RATE_LIMIT_PER_MIN: z.coerce.number().default(30),
   CLAUDE_DAILY_LIMIT: z.coerce.number().default(200),
   MAX_ATTACHMENT_MB: z.coerce.number().default(10),
+  /** Default for LLM reranking of search hits (per request: ?rerank=true|false). One claude -p call per search, so off by default. */
+  SEARCH_RERANK: z.enum(["true", "false"]).default("false"),
   /** Transcription endpoint (local speaches service or WhisperStorm); unset = voice captures fail visibly and are retried. */
   WHISPER_URL: z.string().optional(),
   WHISPER_TOKEN: z.string().optional(),
@@ -41,6 +43,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     corsOrigins: e.CORS_ORIGINS.split(",").map((s) => s.trim()).filter(Boolean),
     rateLimitPerMin: e.RATE_LIMIT_PER_MIN,
     claudeDailyLimit: e.CLAUDE_DAILY_LIMIT,
+    searchRerank: e.SEARCH_RERANK === "true",
     maxAttachmentBytes: e.MAX_ATTACHMENT_MB * 1024 * 1024,
     whisperUrl: e.WHISPER_URL,
     whisperToken: e.WHISPER_TOKEN,
