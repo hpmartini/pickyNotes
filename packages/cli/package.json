@@ -1,0 +1,9 @@
+{
+  "name": "@pickynotes/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": { "note": "src/index.ts" },
+  "scripts": { "typecheck": "tsc -p .", "test": "vitest run" },
+  "dependencies": { "@pickynotes/shared": "*", "commander": "^13.0.0" }
+}

@@ -1,0 +1,18 @@
+{
+  "name": "pickynotes",
+  "private": true,
+  "type": "module",
+  "workspaces": ["packages/*", "apps/*"],
+  "scripts": {
+    "typecheck": "npm run typecheck -ws --if-present",
+    "test": "npm test -ws --if-present",
+    "build": "npm run build -ws --if-present",
+    "openapi": "npm run openapi -w @pickynotes/server"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  }
+}

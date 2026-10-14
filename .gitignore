@@ -7,3 +7,6 @@ build/
 *.log
 .idea/
 .vscode/
+target/
+vault/
+!.env.example

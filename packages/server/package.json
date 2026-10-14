@@ -1,0 +1,26 @@
+{
+  "name": "@pickynotes/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc -p .",
+    "test": "vitest run",
+    "start": "tsx src/main.ts",
+    "openapi": "tsx src/openapi.ts"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.0",
+    "@hono/zod-openapi": "^0.19.0",
+    "@pickynotes/shared": "*",
+    "gray-matter": "^4.0.3",
+    "hono": "^4.7.0",
+    "hono-rate-limiter": "^0.4.2",
+    "pg": "^8.13.0",
+    "pg-boss": "^10.1.0",
+    "ulid": "^2.3.0",
+    "zod": "^3.24.0"
+  },
+  "optionalDependencies": { "@huggingface/transformers": "^3.3.0" },
+  "devDependencies": { "@types/pg": "^8.11.0" }
+}
