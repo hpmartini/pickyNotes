@@ -41,14 +41,17 @@ export async function emit(deps: Deps, event: WebhookEvent["event"], noteId: str
 export async function finishNote(deps: Deps, p: { id: string; body: string; source: NoteRow["source"]; kind: string; title?: string; createdAt: string; clientId?: string; frontmatter?: Record<string, unknown> }) {
   const ignored = p.source === "imported" && mentionsClaude(p.body);
   const fm = { id: p.id, kind: p.kind, source: p.source, created: p.createdAt, status: "pending", tags: [] as string[], ...p.frontmatter, ...(ignored ? { claude: "ignored" } : {}) };
-  let resumed = false;
-  const path = await deps.vault.writeNew(p.id, fm, p.body).catch((e) => {
+  // The note may have been moved/edited since the first attempt (reindex points the row at the new path): resume from there, never write a second raw/<id>.md.
+  const existing = await deps.repo.getNote(p.id);
+  const moved = existing && existing.body !== "" && existing.path !== `raw/${p.id}.md` && (await access(deps.vault.absPath(existing.path)).then(() => true, () => false)) ? existing.path : null;
+  let resumed = !!moved;
+  const path = moved ?? await deps.vault.writeNew(p.id, fm, p.body).catch((e) => {
     if (e?.code !== "EEXIST") throw e;
     resumed = true; // job retry after a partial run: the file is the truth, redo only what is unfinished
     return `raw/${p.id}.md`;
   });
   const file = resumed ? await deps.vault.read(path) : null;
-  const row = resumed ? await deps.repo.getNote(p.id) : null;
+  const row = resumed ? existing : null;
   const instructions = resumed ? await deps.repo.getInstructions(p.id) : [];
   // Index fields come from the file on resume (the truth), so a curation that landed in the vault but not in the row is restored.
   const body = file ? stripPickyBlocks(file.body) : p.body;

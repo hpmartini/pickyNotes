@@ -1,8 +1,9 @@
 import { createHmac } from "node:crypto";
 import { existsSync, statSync } from "node:fs";
-import { mkdtemp, readFile, readdir, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, writeFile, mkdir, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import matter from "gray-matter";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppDeps, createApp, hashToken } from "./app.js";
 import { InlineQueue, handlers } from "./jobs.js";
@@ -401,6 +402,53 @@ describe("resume gaps", () => {
   });
 });
 
+describe("redelivery after the note was moved and edited", () => {
+  /** Simulates the user filing + editing the note in the vault, then reindexing. */
+  const moveAndEdit = async (id: string) => {
+    await mkdir(path.join(root, "wiki"), { recursive: true });
+    const f = matter(await readFile(path.join(root, `raw/${id}.md`), "utf8"));
+    await writeFile(path.join(root, "wiki/umgezogen.md"), matter.stringify(`${f.content}\nMeine Ergänzung\n`, { ...f.data, tags: ["mein-tag"] }));
+    await unlink(path.join(root, `raw/${id}.md`));
+    await post("/admin/reindex", {}, "100.64.0.1");
+    queue.pending = [];
+  };
+  const expectUntouched = async (id: string, clientId: string, again: () => Promise<Response>) => {
+    const before = await repo.getNote(id);
+    expect(before).toMatchObject({ path: "wiki/umgezogen.md", status: "curated", tags: ["mein-tag"] });
+    expect(before!.body).toContain("Meine Ergänzung");
+    const created = () => webhookCalls.filter((c) => JSON.parse(c.init.body as string).event === "note.created").length;
+    const createdBefore = created();
+    const r = await again();
+    expect(r.status).toBe(202);
+    expect(((await r.json()) as { id: string }).id).toBe(id);
+    await queue.drain(deps);
+    expect(queue.failures).toEqual([]);
+    expect(existsSync(path.join(root, `raw/${id}.md`))).toBe(false);
+    expect(await repo.getNote(id)).toEqual(before);
+    expect(created()).toBe(createdBefore);
+    expect((await repo.getNoteByClientId(clientId))!.id).toBe(id);
+  };
+
+  it("a text capture retried with the same clientId resumes at the moved path: no second raw file, edits survive, one note.created", async () => {
+    await repo.addWebhook({ id: "w", url: "http://hook/x", secret: "s".repeat(20) });
+    const body = { kind: "text", source: "typed", text: "Gedanke", clientId: "cid-moved" };
+    const { id } = (await (await post("/captures", body)).json()) as { id: string };
+    await queue.drain(deps);
+    await moveAndEdit(id);
+    await expectUntouched(id, "cid-moved", () => post("/captures", body));
+    expect(webhookCalls.filter((c) => JSON.parse(c.init.body as string).event === "note.created")).toHaveLength(1);
+  });
+
+  it("a mail redelivered with the same messageId does the same", async () => {
+    await repo.addWebhook({ id: "w", url: "http://hook/x", secret: "s".repeat(20) });
+    const mail = { from: "anna@kanzlei.example", subject: "Frist", text: "Bitte antworten", messageId: "<moved@kanzlei.example>" };
+    const { id } = (await (await post("/captures/mail", mail)).json()) as { id: string };
+    await queue.drain(deps);
+    await moveAndEdit(id);
+    await expectUntouched(id, "mail:<moved@kanzlei.example>", () => post("/captures/mail", mail));
+  });
+});
+
 describe("webhooks", () => {
   it("delivers HMAC-signed note.created and note.curated events", async () => {
     await post("/admin/webhooks", { url: "http://hook/x", secret: "s".repeat(20) }, "100.64.0.1");
@@ -471,6 +519,14 @@ describe("object store for large attachments", () => {
     expect(seen).toMatchObject({ existed: true, size: 3000 });
     expect(existsSync(seen!.path)).toBe(false);
     expect(await readFile(path.join(root, `raw/${id}.md`), "utf8")).toContain("Rechnung 42");
+  });
+
+  it("two large captures named '..' get distinct keys, both below attachments/<id>/", async () => {
+    useStore();
+    for (const clientId of ["c1", "c2"]) expect((await post("/captures", { kind: "file", source: "imported", data: big(), filename: "..", mime: "text/plain", clientId })).status).toBe(202);
+    const keys = [...objects.keys()];
+    expect(new Set(keys).size).toBe(2);
+    for (const k of keys) expect(k).toMatch(/^attachments\/[^/]+\/[^/.][^/]*$/);
   });
 
   it("without a store, or above the store limit, it is 413", async () => {

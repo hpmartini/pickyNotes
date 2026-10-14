@@ -11,7 +11,10 @@ export const CLAUDE_END = "<!-- /picky:claude -->";
 export class ConflictError extends Error {}
 
 /** Client-supplied names never reach a path or object key unsanitized. */
-export const safeFilename = (filename: string) => path.basename(filename).replace(/[^\w.\-]+/g, "_").slice(-100) || "file";
+export const safeFilename = (filename: string) => {
+  const safe = path.basename(filename).replace(/[^\w.\-]+/g, "_").slice(-100);
+  return /^\.*$/.test(safe) ? "file" : safe; // "." / ".." would collapse an object key onto its directory
+};
 
 export interface VaultFile {
   path: string; // vault-relative, posix

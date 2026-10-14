@@ -8,6 +8,7 @@ import { isTailscaleOrAllowed } from "./net.js";
 import { ClaudeCliProvider, FakeEmbedding, FakeLlm, LimitedLlm, QuotaExceededError, WhisperTranscription } from "./providers.js";
 import { MemoryRepo } from "./memory-repo.js";
 import { rrf } from "./search.js";
+import { safeFilename } from "./vault.js";
 
 describe("rrf", () => {
   it("rewards ids that appear in several lists", () => {
@@ -30,6 +31,13 @@ describe("@claude parser", () => {
     b = upsertCallout(b, "c_2", "pending");
     b = upsertCallout(b, "c_1", "done", "Ergebnis\nzwei");
     expect(b).toBe("> [!claude] id:c_1 status:done\n> Ergebnis\n> zwei\n\n> [!claude] id:c_2 status:pending");
+  });
+});
+
+describe("safeFilename", () => {
+  it("never yields '.' or '..' (an S3 key attachments/<id>/.. would collapse onto the directory)", () => {
+    for (const n of [".", "..", "...", "a/..", "../.."]) expect(safeFilename(n)).not.toMatch(/^\.+$/);
+    expect(safeFilename("../gross datei.txt")).toBe("gross_datei.txt");
   });
 });
 
