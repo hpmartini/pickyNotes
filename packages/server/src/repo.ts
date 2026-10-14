@@ -2,6 +2,8 @@ import type { Note } from "@pickynotes/shared";
 
 export interface NoteRow extends Note {
   contentHash: string | null;
+  /** Client-generated capture id; unique, lets retried captures resolve to the existing note. */
+  clientId?: string | null;
 }
 export type NoteUpsert = Omit<NoteRow, "createdAt"> & { createdAt?: string };
 
@@ -14,17 +16,24 @@ export interface Webhook {
   url: string;
   secret: string;
 }
+/** Progress of one @claude instruction; a retry resumes after the last completed stage. */
+export type InstructionStage = "claimed" | "callout_written" | "executed" | "published";
 export interface InstructionRow {
   id: string;
   noteId: string;
   hash: string;
+  /** Status shown in the note's callout. */
   status: "pending" | "done" | "failed";
+  stage: InstructionStage;
+  /** Model answer (or error text), stored at `executed` so a retry never calls the model again. */
+  result: string | null;
 }
 
 /** Everything the app needs from storage. Implemented by PgRepo (prod) and MemoryRepo (tests). */
 export interface Repo {
   upsertNote(n: NoteUpsert): Promise<void>;
   getNote(id: string): Promise<NoteRow | null>;
+  getNoteByClientId(clientId: string): Promise<NoteRow | null>;
   getNotes(ids: string[]): Promise<NoteRow[]>;
   /** Drops index rows whose files vanished. Never touches the vault. */
   deleteMissing(paths: string[]): Promise<number>;
@@ -42,12 +51,12 @@ export interface Repo {
   addWebhook(w: Webhook): Promise<void>;
   listWebhooks(): Promise<Webhook[]>;
 
-  /** True if the day's counter was incremented, false if `limit` is already reached. */
+  /** True if the day's counter was incremented, false if `limit` is already reached (a limit of 0 never consumes). */
   consumeLlmQuota(day: string, limit: number): Promise<boolean>;
 
   /** Exactly-once guard: false if (noteId, hash) was already claimed. */
   claimInstruction(i: InstructionRow): Promise<boolean>;
-  setInstructionStatus(id: string, status: InstructionRow["status"]): Promise<void>;
+  updateInstruction(id: string, patch: Partial<Pick<InstructionRow, "stage" | "status" | "result">>): Promise<void>;
   getInstructions(noteId: string): Promise<InstructionRow[]>;
 
   recordConflict(path: string, kind: string, detail?: string): Promise<void>;

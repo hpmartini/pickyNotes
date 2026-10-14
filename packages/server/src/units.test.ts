@@ -18,9 +18,10 @@ describe("rrf", () => {
 describe("@claude parser", () => {
   it("finds instructions, dedups, ignores own blocks and quoted lines", () => {
     const body = "Idee\n@claude fasse das zusammen\nzweite Zeile\n\n@claude fasse das zusammen\nzweite Zeile\n\n> @claude quoted\n<!-- picky:claude -->\n> [!claude] id:c_1 status:done\n> @claude loop\n<!-- /picky:claude -->";
-    const ins = parseInstructions(body);
+    const ins = parseInstructions(body, "n1");
     expect(ins).toHaveLength(1);
     expect(ins[0]!.text).toBe("fasse das zusammen zweite Zeile");
+    expect(parseInstructions(body, "n2")[0]!.id).not.toBe(ins[0]!.id); // same text, other note, other id
   });
   it("callouts carry id and status and are updated in place", () => {
     expect(renderCallout("c_1", "pending")).toBe("> [!claude] id:c_1 status:pending");

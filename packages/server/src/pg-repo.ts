@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import pg from "pg";
 import type { Device, InstructionRow, NoteRow, NoteUpsert, Repo, Webhook } from "./repo.js";
 
-const COLS = "id, path, title, body, tags, summary, source, status, content_hash, created_at";
+const COLS = "id, path, title, body, tags, summary, source, status, content_hash, client_id, created_at";
 const toNote = (r: any): NoteRow => ({
   id: r.id,
   path: r.path,
@@ -15,6 +15,7 @@ const toNote = (r: any): NoteRow => ({
   source: r.source,
   status: r.status,
   contentHash: r.content_hash,
+  clientId: r.client_id,
   createdAt: new Date(r.created_at).toISOString(),
 });
 const vec = (v: number[]) => `[${v.join(",")}]`;
@@ -44,13 +45,30 @@ export class PgRepo implements Repo {
   constructor(readonly pool: pg.Pool) {}
 
   async upsertNote(n: NoteUpsert) {
-    await this.pool.query(
-      `INSERT INTO notes (id, path, title, body, tags, summary, source, status, content_hash, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9, COALESCE($10::timestamptz, now()))
-       ON CONFLICT (path) DO UPDATE SET id=EXCLUDED.id, title=EXCLUDED.title, body=EXCLUDED.body, tags=EXCLUDED.tags,
-         summary=EXCLUDED.summary, source=EXCLUDED.source, status=EXCLUDED.status, content_hash=EXCLUDED.content_hash`,
-      [n.id, n.path, n.title, n.body, n.tags, n.summary, n.source, n.status, n.contentHash, n.createdAt ?? null],
-    );
+    const c = await this.pool.connect();
+    try {
+      await c.query("BEGIN");
+      // Both id and path are unique: a different row on this path (file replaced by another note) is an index row only, drop it first.
+      await c.query("DELETE FROM notes WHERE path=$1 AND id<>$2", [n.path, n.id]);
+      await c.query(
+        `INSERT INTO notes (id, path, title, body, tags, summary, source, status, content_hash, client_id, created_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10, COALESCE($11::timestamptz, now()))
+         ON CONFLICT (id) DO UPDATE SET path=EXCLUDED.path, title=EXCLUDED.title, body=EXCLUDED.body, tags=EXCLUDED.tags,
+           summary=EXCLUDED.summary, source=EXCLUDED.source, status=EXCLUDED.status, content_hash=EXCLUDED.content_hash,
+           client_id=COALESCE(EXCLUDED.client_id, notes.client_id)`,
+        [n.id, n.path, n.title, n.body, n.tags, n.summary, n.source, n.status, n.contentHash, n.clientId ?? null, n.createdAt ?? null],
+      );
+      await c.query("COMMIT");
+    } catch (e) {
+      await c.query("ROLLBACK");
+      throw e;
+    } finally {
+      c.release();
+    }
+  }
+  async getNoteByClientId(clientId: string) {
+    const r = await this.pool.query(`SELECT ${COLS} FROM notes WHERE client_id=$1`, [clientId]);
+    return r.rows[0] ? toNote(r.rows[0]) : null;
   }
   async getNote(id: string) {
     const r = await this.pool.query(`SELECT ${COLS} FROM notes WHERE id=$1`, [id]);
@@ -111,8 +129,9 @@ export class PgRepo implements Repo {
 
   async consumeLlmQuota(day: string, limit: number) {
     const r = await this.pool.query(
-      `INSERT INTO llm_usage (day, count) VALUES ($1, 1)
-       ON CONFLICT (day) DO UPDATE SET count = llm_usage.count + 1 WHERE llm_usage.count < $2
+      // WHERE $2 > 0: with a limit of 0 the first call must not create a row (that would burn quota that was never granted)
+      `INSERT INTO llm_usage (day, count) SELECT $1::date, 1 WHERE $2::int > 0
+       ON CONFLICT (day) DO UPDATE SET count = llm_usage.count + 1 WHERE llm_usage.count < $2::int
        RETURNING count`,
       [day, limit],
     );
@@ -121,18 +140,20 @@ export class PgRepo implements Repo {
 
   async claimInstruction(i: InstructionRow) {
     const r = await this.pool.query(
-      `INSERT INTO claude_instructions (id, note_id, instruction_hash, status) VALUES ($1,$2,$3,$4)
+      `INSERT INTO claude_instructions (id, note_id, instruction_hash, status, stage, result) VALUES ($1,$2,$3,$4,$5,$6)
        ON CONFLICT (note_id, instruction_hash) DO NOTHING`,
-      [i.id, i.noteId, i.hash, i.status],
+      [i.id, i.noteId, i.hash, i.status, i.stage, i.result],
     );
     return r.rowCount === 1;
   }
-  async setInstructionStatus(id: string, status: InstructionRow["status"]) {
-    await this.pool.query("UPDATE claude_instructions SET status=$2 WHERE id=$1", [id, status]);
+  async updateInstruction(id: string, patch: Partial<Pick<InstructionRow, "stage" | "status" | "result">>) {
+    await this.pool.query("UPDATE claude_instructions SET stage=COALESCE($2,stage), status=COALESCE($3,status), result=COALESCE($4,result) WHERE id=$1", [
+      id, patch.stage ?? null, patch.status ?? null, patch.result ?? null,
+    ]);
   }
   async getInstructions(noteId: string): Promise<InstructionRow[]> {
-    const r = await this.pool.query("SELECT id, note_id, instruction_hash, status FROM claude_instructions WHERE note_id=$1", [noteId]);
-    return r.rows.map((x) => ({ id: x.id, noteId: x.note_id, hash: x.instruction_hash, status: x.status }));
+    const r = await this.pool.query("SELECT id, note_id, instruction_hash, status, stage, result FROM claude_instructions WHERE note_id=$1", [noteId]);
+    return r.rows.map((x) => ({ id: x.id, noteId: x.note_id, hash: x.instruction_hash, status: x.status, stage: x.stage, result: x.result }));
   }
 
   async recordConflict(p: string, kind: string, detail?: string) {

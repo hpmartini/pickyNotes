@@ -20,10 +20,13 @@ export class MemoryRepo implements Repo {
   async upsertNote(n: NoteUpsert) {
     const prev = [...this.notes.values()].find((x) => x.path === n.path || x.id === n.id);
     if (prev && prev.id !== n.id) this.notes.delete(prev.id);
-    this.notes.set(n.id, { ...n, createdAt: n.createdAt ?? prev?.createdAt ?? new Date().toISOString() });
+    this.notes.set(n.id, { ...n, clientId: n.clientId ?? prev?.clientId ?? null, createdAt: n.createdAt ?? prev?.createdAt ?? new Date().toISOString() });
   }
   async getNote(id: string) {
     return this.notes.get(id) ?? null;
+  }
+  async getNoteByClientId(clientId: string) {
+    return [...this.notes.values()].find((n) => n.clientId === clientId) ?? null;
   }
   async getNotes(ids: string[]) {
     return ids.flatMap((id) => this.notes.get(id) ?? []);
@@ -95,15 +98,16 @@ export class MemoryRepo implements Repo {
 
   async claimInstruction(i: InstructionRow) {
     if ([...this.instr.values()].some((x) => x.noteId === i.noteId && x.hash === i.hash)) return false;
+    if (this.instr.has(i.id)) throw new Error(`duplicate key value violates unique constraint (id=${i.id})`); // like the PG primary key
     this.instr.set(i.id, { ...i });
     return true;
   }
-  async setInstructionStatus(id: string, status: InstructionRow["status"]) {
+  async updateInstruction(id: string, patch: Partial<Pick<InstructionRow, "stage" | "status" | "result">>) {
     const i = this.instr.get(id);
-    if (i) i.status = status;
+    if (i) Object.assign(i, patch);
   }
   async getInstructions(noteId: string) {
-    return [...this.instr.values()].filter((i) => i.noteId === noteId);
+    return [...this.instr.values()].filter((i) => i.noteId === noteId).map((i) => ({ ...i }));
   }
 
   async recordConflict(path: string, kind: string, detail?: string) {

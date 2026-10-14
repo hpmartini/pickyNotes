@@ -109,7 +109,7 @@ export function createApp(deps: AppDeps) {
   app.openapi(routes.note, async (c) => {
     const n = await deps.repo.getNote(c.req.valid("param").id);
     if (!n) return c.json({ error: "not found" }, 404);
-    const { contentHash: _h, ...note } = n;
+    const { contentHash: _h, clientId: _c, ...note } = n;
     return c.json(note, 200);
   });
   app.openapi(routes.search, async (c) => {

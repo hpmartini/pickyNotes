@@ -19,9 +19,9 @@ export const mentionsClaude = (body: string) => /(^|\s)@claude\b/i.test(body);
 
 /**
  * Extracts @claude instructions from the user's own text. Our own generated blocks and
- * quoted lines are excluded so results never trigger new instructions.
+ * quoted lines are excluded so results never trigger new instructions. Ids are derived from noteId + instruction hash.
  */
-export function parseInstructions(body: string): Instruction[] {
+export function parseInstructions(body: string, noteId: string): Instruction[] {
   const own = strip(strip(body, CLAUDE_START, CLAUDE_END), SUMMARY_START, SUMMARY_END);
   const out = new Map<string, Instruction>();
   const lines = own.split("\n");
@@ -33,7 +33,8 @@ export function parseInstructions(body: string): Instruction[] {
     const text = parts.join(" ").replace(/\s+/g, " ").trim();
     if (!text) continue;
     const hash = createHash("sha256").update(text).digest("hex");
-    out.set(hash, { id: `c_${hash.slice(0, 10)}`, hash, text });
+    // The id is the table's primary key, so it must differ per note: the same text in two notes is two instructions.
+    out.set(hash, { id: `c_${createHash("sha256").update(`${noteId}:${hash}`).digest("hex").slice(0, 12)}`, hash, text });
   }
   return [...out.values()];
 }

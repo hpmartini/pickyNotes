@@ -1,12 +1,13 @@
 import { createHmac } from "node:crypto";
-import { mkdtemp, readFile, writeFile, mkdir } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppDeps, createApp, hashToken } from "./app.js";
-import { InlineQueue } from "./jobs.js";
+import { InlineQueue, handlers } from "./jobs.js";
 import { MemoryRepo } from "./memory-repo.js";
 import { FakeEmbedding, FakeLlm, FakeTranscription } from "./providers.js";
+import { finishNote } from "./services.js";
 import { Vault } from "./vault.js";
 
 const TOKEN = "pk_testtoken";
@@ -177,6 +178,104 @@ describe("capture pipeline", () => {
     await post("/captures", { kind: "text", source: "typed", text: "hallo welt" });
     await queue.drain(deps);
     expect(queue.failures.map((f) => f.name)).toEqual(["curate"]);
+  });
+});
+
+describe("@claude instructions: ids, concurrency, staged retry", () => {
+  const modelCalls = () => llm.calls.filter((c) => c.prompt.startsWith("Instruction:")).length;
+  const captureClaude = async (text = "Idee\n@claude erkläre das") => {
+    const { id } = (await (await post("/captures", { kind: "text", source: "typed", text })).json()) as { id: string };
+    queue.pending = []; // run the handlers by hand
+    return id;
+  };
+  const fileOf = (id: string) => readFile(path.join(root, `raw/${id}.md`), "utf8");
+
+  it("the same instruction in two notes runs in both with separate ids", async () => {
+    const a = await captureClaude();
+    const b = await captureClaude();
+    for (const id of [a, b]) await handlers["claude-instruction"](deps, { noteId: id });
+    expect(modelCalls()).toBe(2);
+    const ids = [...(await repo.getInstructions(a)), ...(await repo.getInstructions(b))];
+    expect(new Set(ids.map((i) => i.id)).size).toBe(2);
+    for (const id of [a, b]) expect(await fileOf(id)).toMatch(/> \[!claude\] id:c_\w+ status:done/);
+  });
+
+  it("curator and @claude updates in parallel on one note both land", async () => {
+    const id = await captureClaude();
+    await Promise.all([handlers.curate(deps, { noteId: id }), handlers["claude-instruction"](deps, { noteId: id })]);
+    const file = await fileOf(id);
+    expect(file).toContain("status: curated");
+    expect(file).toContain("> Ein rotes Auto kaufen.");
+    expect(file).toMatch(/> \[!claude\] id:c_\w+ status:done\n> Antwort auf Anweisung/);
+    expect((await readdir(path.join(root, "raw"))).filter((f) => f.endsWith(".tmp"))).toEqual([]);
+  });
+
+  it("a failed pending-callout write is retried: callout rewritten, exactly one model call, published", async () => {
+    const id = await captureClaude();
+    vi.spyOn(deps.vault, "curate").mockRejectedValueOnce(new Error("disk full"));
+    await expect(handlers["claude-instruction"](deps, { noteId: id })).rejects.toThrow("disk full");
+    expect(modelCalls()).toBe(0);
+    expect(await repo.getInstructions(id)).toMatchObject([{ stage: "claimed" }]);
+    await handlers["claude-instruction"](deps, { noteId: id });
+    expect(modelCalls()).toBe(1);
+    expect(await repo.getInstructions(id)).toMatchObject([{ stage: "published", status: "done", result: "Antwort auf Anweisung" }]);
+    expect(await fileOf(id)).toMatch(/> \[!claude\] id:c_\w+ status:done\n> Antwort auf Anweisung/);
+  });
+
+  it("a failed final write reuses the stored result instead of calling the model again", async () => {
+    const id = await captureClaude();
+    const curate = vi.spyOn(deps.vault, "curate");
+    curate.mockImplementationOnce((...a) => Vault.prototype.curate.apply(deps.vault, a)); // pending callout lands
+    curate.mockRejectedValueOnce(new Error("disk full")); // final callout does not
+    await expect(handlers["claude-instruction"](deps, { noteId: id })).rejects.toThrow("disk full");
+    expect(await repo.getInstructions(id)).toMatchObject([{ stage: "executed", result: "Antwort auf Anweisung" }]);
+    expect(await fileOf(id)).toMatch(/status:pending/);
+    await handlers["claude-instruction"](deps, { noteId: id });
+    expect(modelCalls()).toBe(1);
+    expect(await repo.getInstructions(id)).toMatchObject([{ stage: "published" }]);
+    expect(await fileOf(id)).toMatch(/> \[!claude\] id:c_\w+ status:done\n> Antwort auf Anweisung/);
+    await handlers["claude-instruction"](deps, { noteId: id }); // published: nothing more happens
+    expect(modelCalls()).toBe(1);
+  });
+});
+
+describe("idempotent captures + resumable finishNote", () => {
+  it("a retried capture with the same clientId returns the existing note and creates nothing new", async () => {
+    for (const body of [{ kind: "text", source: "typed", text: "einmal" }, { kind: "voice", source: "dictated", data: Buffer.from("a").toString("base64"), filename: "v.webm" }]) {
+      const first = (await (await post("/captures", { ...body, clientId: `cid-${body.kind}` })).json()) as { id: string };
+      const again = await post("/captures", { ...body, clientId: `cid-${body.kind}` });
+      expect(again.status).toBe(202);
+      expect(((await again.json()) as { id: string }).id).toBe(first.id);
+    }
+    await queue.drain(deps);
+    expect(queue.failures).toEqual([]);
+    expect([...repo.notes.keys()]).toHaveLength(2);
+    expect((await readdir(path.join(root, "raw"))).filter((f) => f.endsWith(".md"))).toHaveLength(2);
+    const note = (await (await call(`/notes/${[...repo.notes.keys()][0]}`)).json()) as Record<string, unknown>;
+    expect(note).not.toHaveProperty("clientId");
+  });
+
+  it("finishNote on EEXIST resumes only unfinished stages", async () => {
+    await repo.addWebhook({ id: "w", url: "http://hook/x", secret: "s".repeat(20) });
+    const note = { id: "01RESUME", body: "Gedanke", source: "typed" as const, kind: "text", createdAt: "2026-01-01T00:00:00.000Z" };
+    const sent = () => queue.pending.map((j) => j.name);
+
+    await finishNote(deps, note);
+    expect(sent()).toEqual(["embed", "curate", "webhook-deliver"]);
+    queue.pending = [];
+    await finishNote(deps, note); // retry after the first run got as far as indexing
+    expect(sent()).toEqual(["embed", "curate"]); // not indexed again, no second note.created
+
+    await queue.drain(deps);
+    expect((await repo.getNote(note.id))!.status).toBe("curated");
+    await finishNote(deps, note); // retry after everything finished
+    expect(sent()).toEqual([]);
+    expect((await repo.getNote(note.id))!.status).toBe("curated");
+
+    repo.notes.delete(note.id); // crashed before indexing: row is rebuilt from the file, created is emitted
+    await finishNote(deps, note);
+    expect(sent()).toEqual(["webhook-deliver"]);
+    expect(await repo.getNote(note.id)).toMatchObject({ status: "curated", title: "Auto kaufen", tags: ["auto", "kauf"] });
   });
 });
 
