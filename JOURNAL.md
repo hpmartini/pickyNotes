@@ -44,6 +44,12 @@ Auftrag: Briefing vollständig umsetzen, Nicht-Machbares in README („Vertagt�
 - Befund (real): `curate` legte Vorschläge erst nach `patchNote` an. Stürzte der Job danach ab (z. B. `syncRow`), stand `status: curated` schon in der Datei, der Retry kehrte früh zurück → Vorschläge nie in der DB. Fix: Vorschläge vor `patchNote` speichern (idempotent), Events danach. Regressionstest: Erweiterung des Resume-Tests („Kuration in der Datei, nicht in der Zeile“) prüft `listSuggestions`.
 - Dokumentiert statt gebaut: Crash zwischen Datei und DB-Zeile beim Text-Capture (zweite Notiz möglich), verlorenes `suggestion.created`-Event bei Crash zwischen Insert und Webhook. README-Altlast („Summary bleibt leer“) korrigiert. Whisper-Cache-Pfad gegen das Image geprüft (User `ubuntu`, `HOME=/home/ubuntu`, Port 8000).
 
+**Nachtrag Review-Befunde (nach Abschluss).**
+- [blocker] `safeFilename('..')` lieferte `..` → S3-Key `attachments/<id>/..` normalisiert zu `attachments/`, verschiedene Captures teilten sich eine signierte PUT-URL (Überschreib-Risiko; der Vault-Pfad war durch das `<id>-`-Präfix nicht betroffen). Fix an der Wurzel in `vault.ts`: rein aus Punkten bestehende Namen werden zu `file`. Tests: Unit (`.`, `..`, `...`, `a/..`, `../..`) und zwei große Captures mit Dateiname `..` → zwei verschiedene Keys unter `attachments/<id>/`.
+- [major] `finishNote` nahm `raw/<id>.md` an. Nach Verschieben/Reindex legte ein Retry (Text mit gleicher `clientId`, Mail mit gleicher `messageId`) eine zweite Rohdatei an und überschrieb Body/Tags/Summary/Status der bearbeiteten Zeile. Fix: erst `getNote(id)`; liegt die Zeile (Body nicht leer) auf einem anderen Pfad und die Datei existiert dort, wird von dort fortgesetzt, ohne `writeNew`. EEXIST-Resume bleibt. Regressionstests (Text und Mail): Notiz nach `wiki/` verschoben und bearbeitet, Reindex, Retry → keine neue `raw/<id>.md`, Zeile unverändert, genau ein `note.created`. Beide Tests schlagen ohne den Fix fehl (geprüft).
+- Backup in README korrigiert: Vault + S3-Bucket/`s3data` (einzige Originale großer Anhänge) + `pg_dump` als Pflicht (Vorschlags-Entscheidungen und Konflikt-Historie sind nicht aus dem Vault rekonstruierbar), mit Restore-Hinweisen.
+- Gates erneut: typecheck grün; `npm test` server 73 (+10 PG übersprungen), cli 5, shared 2, desktop 17 grün; PG auf `picky_test` 83/83; Editor-Test 5/5; `npm run openapi` ohne Diff; `docker compose config` ok.
+
 **WP6/7.** README aktualisiert (Setup mit Port 5544, S3/Whisper/Mail/Vorschläge, „Nicht gebaut“ bereinigt, Abschnitt „Vertagt / nicht machbar“ mit Grund und nächstem Schritt je Punkt). Dieses Journal zuletzt.
 
 ## Entscheidungen
@@ -60,8 +66,8 @@ Auftrag: Briefing vollständig umsetzen, Nicht-Machbares in README („Vertagt�
 | Prüfung | Ergebnis |
 |:--|:--|
 | `npm run typecheck` | grün (alle Workspaces) |
-| `npm test` | cli 5, server 69 (+10 PG übersprungen), shared 2, desktop 17: alle grün |
-| PG auf `picky_test` | 79/79 grün |
+| `npm test` | cli 5, server 73 (+10 PG übersprungen), shared 2, desktop 17: alle grün |
+| PG auf `picky_test` | 83/83 grün |
 | Editor-Test (echter Atomic Editor) | 5/5 grün |
 | `npm run openapi` | ok, `openapi.json` entspricht dem Code (Test) |
 | `docker compose config` / `build` / Start | ok / ok / Health + OpenAPI ok |

@@ -83,7 +83,11 @@ docker compose --profile s3 --profile whisper up -d    # danach S3_ENDPOINT=http
 - **Sprache:** `WHISPER_URL` leer = Sprachnotizen scheitern sichtbar und werden von der Queue wiederholt (der Desktop puffert ohnehin). `WHISPER_API=openai` (Default, `model`-Feld aus `WHISPER_MODEL`) für den lokalen speaches-Dienst, `whisperstorm` für das angenommene WhisperStorm-Format. Nicht erreichbar, Timeout (5 min) oder 5xx = Job-Retry.
 - **Mail-Weiterleitung:** Der Mail-Dienst (z. B. Forwarding-Webhook) ruft `POST /captures/mail` mit einem eigenen Gerätetoken (`POST /admin/devices`, Name z. B. `mail`) auf. Der Token berechtigt zum Lesen wie jeder Gerätetoken (keine Scopes, siehe Vertagt).
 - **Logs:** `docker compose logs -f server`.
-- **Backup:** Vault (maßgeblich). `pg_dump` optional, die DB ist neu aufbaubar. Die Queue-Tabellen (`pgboss`) liegen in derselben DB.
+- **Backup (alle drei Teile):**
+  1. **Vault** (maßgeblich für Notizen). Restore: Ordner zurückspielen, `POST /admin/reindex`.
+  2. **S3-Bucket** bzw. Volume `s3data`, wenn `S3_ENDPOINT` gesetzt ist: dort liegen die **einzigen Originale** großer Anhänge (der Vault hält nur Link + Extrakt). Restore: Volume/Bucket zurückspielen, gleiche Bucket-Namen und Keys (`attachments/<id>/<name>`).
+  3. **`pg_dump` ist Pflicht, nicht optional.** Aus dem Vault nicht neu aufbaubar sind: Entscheidungen der Vorschlags-Queue (`suggestions`, accepted/dismissed), die Konflikt-Historie (`conflicts`), Geräte-Token, Webhooks, `@claude`-Ausführungsstand (`claude_instructions`, Exactly-once) und die Capture-Dedupe (`client_id`). Dump: `docker compose exec db pg_dump -U postgres -Fc <db> > picky.dump` (DB-Name/User aus `.env`). Restore: `pg_restore --clean --if-exists -d <db> picky.dump`, danach Server starten (Migrationen laufen beim Start). Die Queue-Tabellen (`pgboss`) liegen in derselben DB.
+  Reihenfolge beim Restore: DB, dann Vault/Bucket, dann `POST /admin/reindex` (behält `client_id`; Zeilen auf bewegte Pfade werden korrigiert).
 - **Spec:** `GET /openapi.json`; `npm run openapi` schreibt `packages/server/openapi.json` (ein Test prüft, dass die eingecheckte Datei dem Code entspricht).
 
 ## CLI
