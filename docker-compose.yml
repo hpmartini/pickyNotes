@@ -18,19 +18,51 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    env_file: .env
+    env_file:
+      - path: .env
+        required: false # interpolation below still demands POSTGRES_PASSWORD/VAULT_HOST_PATH
     environment:
       DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@db:5432/pickynotes
       VAULT_PATH: /vault
     ports:
       # Bind to the VPS address that should be reachable. Admin routes only answer Tailscale/allowlisted peers.
-      - "${PUBLISH_ADDR:-127.0.0.1}:8787:8787"
+      - "${PUBLISH_ADDR:-127.0.0.1}:${SERVER_PORT:-8787}:8787"
     volumes:
       - ${VAULT_HOST_PATH:?set VAULT_HOST_PATH in .env}:/vault
       - claude-auth:/home/node/.claude
       - models:/app/node_modules/@huggingface/transformers/.cache
 
+  # Optional (docker compose --profile s3 up): S3-compatible store for attachments above MAX_ATTACHMENT_MB.
+  # Set S3_ENDPOINT=http://s3:9000 in .env to use it; any other S3 endpoint works the same way.
+  # (MinIO's public images were withdrawn from Docker Hub/Quay, so RustFS, Apache-2.0, is used.)
+  s3:
+    image: rustfs/rustfs:1.0.1
+    profiles: [s3]
+    restart: unless-stopped
+    environment:
+      RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY:?set S3_ACCESS_KEY in .env}
+      RUSTFS_SECRET_KEY: ${S3_SECRET_KEY:?set S3_SECRET_KEY in .env}
+    volumes:
+      - s3data:/data
+    ports:
+      # Loopback only; the server reaches it over the compose network.
+      - "127.0.0.1:${S3_PUBLISH_PORT:-9000}:9000"
+      - "127.0.0.1:${S3_CONSOLE_PORT:-9001}:9001"
+
+  # Optional (docker compose --profile whisper up): local OpenAI-compatible transcription (speaches / faster-whisper).
+  # Set WHISPER_URL=http://whisper:8000/v1/audio/transcriptions in .env. The model is downloaded on first use (needs network).
+  whisper:
+    image: ghcr.io/speaches-ai/speaches:0.8.3-cpu
+    profiles: [whisper]
+    restart: unless-stopped
+    volumes:
+      - whispercache:/home/ubuntu/.cache/huggingface/hub
+    ports:
+      - "127.0.0.1:${WHISPER_PUBLISH_PORT:-8000}:8000"
+
 volumes:
   pgdata:
   claude-auth:
   models:
+  s3data:
+  whispercache:

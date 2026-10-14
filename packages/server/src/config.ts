@@ -30,7 +30,8 @@ const Env = z.object({
 export type Config = ReturnType<typeof loadConfig>;
 
 export function loadConfig(env: Record<string, string | undefined> = process.env) {
-  const e = Env.parse(env);
+  // `.env` lines like `S3_ENDPOINT=` (set but empty) mean "unset"
+  const e = Env.parse(Object.fromEntries(Object.entries(env).filter(([, v]) => v !== "")));
   return {
     databaseUrl: e.DATABASE_URL,
     vaultPath: e.VAULT_PATH,

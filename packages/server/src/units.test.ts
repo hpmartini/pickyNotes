@@ -94,6 +94,7 @@ describe("config", () => {
     expect(() => loadConfig({ ...base, S3_ENDPOINT: "http://s3:9000" })).toThrow("S3_ACCESS_KEY");
     expect(loadConfig({ ...base, S3_ENDPOINT: "http://s3:9000", S3_ACCESS_KEY: "a", S3_SECRET_KEY: "b" }).s3).toMatchObject({ bucket: "pickynotes", maxAttachmentBytes: 100 * 1024 * 1024 });
     expect(() => loadConfig({ ...base, WHISPER_API: "bogus" })).toThrow();
+    expect(loadConfig({ ...base, S3_ENDPOINT: "", WHISPER_URL: "", WHISPER_API: "" })).toMatchObject({ s3: undefined, whisperUrl: undefined, whisperApi: "openai" }); // empty .env values = unset
   });
 });
 

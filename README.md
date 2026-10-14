@@ -29,17 +29,34 @@ KI-Notiz-App „Capture & Memory“ (v1, Single-User): Gedanken erfassen (Text, 
 
 Webhooks `note.created`, `note.curated`, `suggestion.created`: `POST /admin/webhooks`, Signatur `X-Picky-Signature: sha256=<HMAC-SHA256(body, secret)>`.
 
+Vorschläge (Aufgaben, Termine, Issues aus der Kuratierung): Tabelle `suggestions`, `GET /suggestions?status=pending|accepted|dismissed`, `POST /suggestions/{id}/accept|dismiss`. **Nur Vorschläge:** Annehmen/Verwerfen speichert die Entscheidung und löst nichts aus (kein Job, keine Mail, kein Termin, kein Todoist-Task). `GET /context?repo=&event=&sender=` liefert passende Notizen.
+
+Mail-Eingang: `POST /captures/mail` (Bearer-Gerätetoken, `{from, subject, text, messageId?}`) legt eine importierte Notiz an (`kind: mail`, Absender in Frontmatter und als „Von:“-Zeile, `@claude` wird nie ausgeführt). Gleiche `messageId` = dieselbe Notiz. `GET /context?sender=anna@example.com` findet sie.
+
 ## Setup (lokal)
 
 ```sh
 npm install
-docker run -d --name picky-pg -e POSTGRES_PASSWORD=dev -p 5432:5432 pgvector/pgvector:pg16
-DATABASE_URL=postgres://postgres:dev@localhost:5432/postgres VAULT_PATH=$HOME/vault \
+docker run -d --name picky-pg -e POSTGRES_PASSWORD=dev -p 5544:5432 pgvector/pgvector:pg16    # 5432 ist oft belegt
+DATABASE_URL=postgres://postgres:dev@localhost:5544/postgres VAULT_PATH=$HOME/vault \
   ADMIN_ALLOWLIST=127.0.0.1,::1 npm start -w @pickynotes/server
 curl -XPOST localhost:8787/admin/devices -H 'content-type: application/json' -d '{"name":"mac"}'   # Token, nur einmal sichtbar
 ```
 
-`npm run typecheck` und `npm test` brauchen weder Postgres noch Netz. Postgres-Integrationstests: `DATABASE_URL=… npm test -w @pickynotes/server` (**löscht das Schema `public`** der angegebenen DB, nur Wegwerf-DB verwenden).
+Optional lokal dazu (alles per Umgebungsvariable abschaltbar, Defaults = aus):
+
+```sh
+# S3-kompatibler Store für Anhänge > MAX_ATTACHMENT_MB (Beispiel RustFS; MinIO-Images sind öffentlich nicht mehr verfügbar)
+docker run -d --name picky-s3 -p 127.0.0.1:9000:9000 -e RUSTFS_ACCESS_KEY=key -e RUSTFS_SECRET_KEY=secret-min8 rustfs/rustfs:1.0.1
+#   → S3_ENDPOINT=http://127.0.0.1:9000 S3_ACCESS_KEY=key S3_SECRET_KEY=secret-min8   (Bucket wird beim ersten Upload angelegt)
+# Whisper (OpenAI-kompatibel, speaches)
+docker run -d --name picky-whisper -p 127.0.0.1:8000:8000 ghcr.io/speaches-ai/speaches:0.8.3-cpu
+#   → WHISPER_URL=http://127.0.0.1:8000/v1/audio/transcriptions   (WHISPER_API=openai, WHISPER_MODEL=Systran/faster-whisper-small)
+```
+
+`npm run typecheck` und `npm test` brauchen weder Postgres noch Netz. Postgres-Integrationstests: `DATABASE_URL=postgres://postgres:dev@localhost:5544/picky_test npm test -w @pickynotes/server` (**löscht das Schema `public`** der angegebenen DB, nur Wegwerf-DB wie `picky_test` verwenden, nie die Dev-DB).
+
+Editor-Test mit dem echten Atomic Editor/CodeMirror (kein Mock, jsdom): `node node_modules/vitest/vitest.mjs run --root apps/desktop src/editor.test.tsx`.
 
 ## Deployment (Hostinger-VPS hinter Tailscale)
 
@@ -47,6 +64,8 @@ curl -XPOST localhost:8787/admin/devices -H 'content-type: application/json' -d 
 cp .env.example .env    # POSTGRES_PASSWORD, VAULT_HOST_PATH, PUBLISH_ADDR, … ausfüllen
 docker compose up -d --build
 docker compose exec -it server claude   # einmalig mit der Subscription einloggen (Volume claude-auth)
+# optional, lokal mitlaufend (nur 127.0.0.1; Host-Ports per SERVER_PORT/S3_PUBLISH_PORT/S3_CONSOLE_PORT/WHISPER_PUBLISH_PORT):
+docker compose --profile s3 --profile whisper up -d    # danach S3_ENDPOINT=http://s3:9000 bzw. WHISPER_URL=http://whisper:8000/v1/audio/transcriptions in .env
 ```
 
 - `/admin/*` antwortet nur Peers aus `100.64.0.0/10` (Tailscale) oder `ADMIN_ALLOWLIST`. Veröffentlichung auf der Tailscale-IP (`PUBLISH_ADDR`) oder hinter eigenem Proxy mit `TRUST_PROXY=true`. Admin-Sperre nach dem Deploy von außen testen.
@@ -60,6 +79,9 @@ docker compose exec -it server claude   # einmalig mit der Subscription einlogge
 - **Reindex:** `POST /admin/reindex` baut den Index aus dem Vault neu (read-only auf dem Vault).
 - **Tageslimit:** `CLAUDE_DAILY_LIMIT`; bei Erschöpfung schlagen Jobs fehl und werden von pg-boss mit Backoff wiederholt (Notiz bleibt `pending`).
 - **Konflikte:** Tabelle `conflicts` (sync-conflict, write-conflict, unreadable).
+- **Große Anhänge (S3):** mit `S3_ENDPOINT` (+ `S3_ACCESS_KEY`/`S3_SECRET_KEY`, `S3_BUCKET`, `S3_REGION`, `S3_MAX_ATTACHMENT_MB`, Default 100) landen Dateien über `MAX_ATTACHMENT_MB` als `attachments/<id>/<name>` im Bucket statt mit 413 abgelehnt zu werden. Die Notiz enthält den `s3://`-Link plus den Extrakt; für `claude -p` wird kurz eine Temp-Datei geladen und wieder gelöscht. Ohne `S3_ENDPOINT` bleibt es bei 413. Der Upload läuft als Base64 im JSON-Body (praktische Grenze ~100 MB; größere bräuchten Multipart/Presigned-Upload).
+- **Sprache:** `WHISPER_URL` leer = Sprachnotizen scheitern sichtbar und werden von der Queue wiederholt (der Desktop puffert ohnehin). `WHISPER_API=openai` (Default, `model`-Feld aus `WHISPER_MODEL`) für den lokalen speaches-Dienst, `whisperstorm` für das angenommene WhisperStorm-Format. Nicht erreichbar, Timeout (5 min) oder 5xx = Job-Retry.
+- **Mail-Weiterleitung:** Der Mail-Dienst (z. B. Forwarding-Webhook) ruft `POST /captures/mail` mit einem eigenen Gerätetoken (`POST /admin/devices`, Name z. B. `mail`) auf. Der Token berechtigt zum Lesen wie jeder Gerätetoken (keine Scopes, siehe Vertagt).
 - **Logs:** `docker compose logs -f server`.
 - **Backup:** Vault (maßgeblich). `pg_dump` optional, die DB ist neu aufbaubar. Die Queue-Tabellen (`pgboss`) liegen in derselben DB.
 - **Spec:** `GET /openapi.json`; `npm run openapi` schreibt `packages/server/openapi.json` (ein Test prüft, dass die eingecheckte Datei dem Code entspricht).
@@ -84,18 +106,31 @@ Hotkey `Cmd+Shift+Space` holt das Fenster nach vorn (Schließen versteckt nur). 
 
 ## Offene Punkte / bewusste Abkürzungen
 
-- **Spec-Punkte 7a/7b/13b/17b:** Die Spec (Claude-Docs-Artefakt) war nicht lesbar (kein Docs-Connector). Gearbeitet wurde nur nach Briefing + Kurzfassung. Nichts davon wurde geraten; bitte gegen die Spec abgleichen.
 - **Embedding-Wahl (Datenmodell):** `vector(384)` fest durch multilingual-e5-small (`claude -p` liefert keine Vektoren). Wechsel = neue Migration + Reindex. Bitte bestätigen.
-- **WhisperStorm-API** unbekannt: angenommen `POST` multipart `file` → `{"text"}` an `WHISPER_URL` (`WHISPER_TOKEN` als Bearer). Gegen die echte API prüfen.
-- **Nicht gebaut:** S3-kompatibler Store (Anhänge > `MAX_ATTACHMENT_MB` werden mit 413 abgelehnt), LLM-Reranking (nur RRF), Mobile/Share-Sheet/Push-Kontext/Sortierdienst (außerhalb v1).
+- Vorschlags-Status (`suggestions`) lebt nur in der DB; ein `reindex` auf leerer DB stellt Vorschläge nicht wieder her (die Liste steht weiter im Frontmatter der Notiz).
 - Ein Embedding pro Notiz (erste 2000 Zeichen), keine Chunks.
 - Screenshot/Datei-Extraktion läuft über `claude -p` mit `Read` nur auf genau diese Datei; Textdateien werden ohne LLM gelesen.
 - Vault-Schreibzugriffe sind pro Notiz im Prozess serialisiert (Hash-Prüfung im Lock, eindeutige Temp-Datei). Compare-before-write hat gegen *externe* Schreiber (Syncthing/Obsidian) weiter ein kleines Zeitfenster zwischen letzter Prüfung und `rename`; bei Konflikten wird abgebrochen und neu gelesen, bei Bedarf Datei-Locking ergänzen.
-- `@claude`-Anweisungen laufen gestuft (`claimed → callout_written → executed → published`, Ergebnis in der DB); ein Retry setzt nach der letzten Stufe fort und ruft das Modell nicht erneut auf. Zwei Worker, die dieselbe Stufe gleichzeitig fortsetzen, sind nicht per Compare-and-Set abgesichert (die Queue liefert pro Notiz einen Job).
+- `@claude`-Anweisungen laufen gestuft (`claimed → callout_written → executing → executed → published`, Ergebnis in der DB); ein Retry setzt nach der letzten Stufe fort und ruft das Modell nicht erneut auf (findet er `executing`, ist der Ausgang unbekannt: die Anweisung wird als „unterbrochen“ markiert statt ein zweites Mal ausgeführt). Zwei Worker, die dieselbe Stufe gleichzeitig fortsetzen, sind nicht per Compare-and-Set abgesichert (die Queue liefert pro Notiz einen Job).
 - Capture-Dedupe über `clientId` (`notes.client_id`, unique) lebt nur in der DB: nach einem Neuaufbau aus dem Vault (`reindex` auf leerer DB) sind alte `clientId`s weg. Zwei exakt gleichzeitige Erstversuche können eine verwaiste Datei in `raw/` hinterlassen (zweiter Insert scheitert, Retry löst auf).
 - Wiederaufnahme von `finishNote` (Retry nach Teillauf) stellt eine fehlende DB-Zeile aus der Datei her, die kuratierte Summary bleibt bis zum nächsten `reindex` leer.
 - Abgelehnte Captures (4xx außer 401/429) bleiben in der Desktop-Warteschlange und sind in der Capture-Ansicht als „Abgelehnt“ mit „Erneut senden“/„Verwerfen“ sichtbar; der Entwurf im Editor bleibt erhalten.
-- Postgres-Pfad (`PgRepo`, Migrationen 001/002) ist gegen `pgvector/pgvector:pg16` geprüft (`DATABASE_URL=… npm test -w @pickynotes/server`); die Gates selbst laufen ohne DB.
-- Tauri/Rust-Teil: `cargo check` ok, aber weder `tauri build` noch Lauf der App geprüft; Mikrofon-/Screenshot-/Hotkey-Pfade sind nicht von den Test-Gates abgedeckt (nur Queue-Logik und Capture-Komponente).
-- `claude -p` mit Headless-Subscription-Login auf dem VPS ist nicht verifiziert.
+- Postgres-Pfad (`PgRepo`, Migrationen 001–004) ist gegen `pgvector/pgvector:pg16` in der Wegwerf-DB `picky_test` geprüft (`DATABASE_URL=… npm test -w @pickynotes/server`); die Gates selbst laufen ohne DB.
 - Dev-Abhängigkeiten melden `npm audit`-Funde (vitest/tinypool, sharp via transformers.js); vor produktivem Einsatz prüfen.
+
+## Vertagt / nicht machbar
+
+Nichts davon wurde stillschweigend weggelassen; jeder Punkt hat einen Grund und, wo möglich, die nächsten Schritte.
+
+| Punkt | Grund | Nächster Schritt |
+|:--|:--|:--|
+| VPS-Deployment (Hostinger) | Kein Zugang zum VPS aus dieser Umgebung. Image und Compose-Stack sind lokal gebaut und gestartet (Health/OpenAPI ok). | Auf dem VPS: `git clone`, `cp .env.example .env` (POSTGRES_PASSWORD, VAULT_HOST_PATH, PUBLISH_ADDR=Tailscale-IP), `docker compose up -d --build`, dann `docker compose exec -it server claude` (Login), Gerätetoken per `POST /admin/devices` von einem Tailscale-Peer, Admin-Sperre von außen testen. |
+| `claude -p` mit Headless-Login im Container | Braucht einen interaktiven Subscription-Login auf dem Zielsystem; lokal nicht reproduzierbar. | Login-Schritt oben; danach eine Test-Notiz erfassen und prüfen, dass sie `status: curated` bekommt. |
+| Echte WhisperStorm-API | Format unbekannt, keine Doku/Zugang. Umgesetzt ist der angenommene Vertrag (`WHISPER_API=whisperstorm`), getestet nur gegen Fakes. Als verifizierte Alternative läuft der lokale speaches-Dienst (`WHISPER_API=openai`). | Gegen die echte API prüfen und `providers.ts` (`WhisperTranscription`) anpassen. |
+| Echter Whisper-Lauf im Compose | Der Dienst verifiziert nur Image-Tag und Start; das Modell wird beim ersten Einsatz geladen (braucht Netz, mehrere hundert MB) und wurde hier nicht transkribiert. | `docker compose --profile whisper up -d`, Sprachnotiz senden, Logs prüfen. |
+| Tauri-Build und Lauf der App | `cargo check` war ok, aber `tauri build` und ein Lauf der nativen App sind hier nicht möglich/geprüft (Rust-Toolchain, Berechtigungen für Mikrofon/Screenshot/Hotkey). Der Editor selbst ist mit dem echten CodeMirror unter jsdom getestet, nicht im Browser/Tauri-Fenster. | `npm run tauri dev -w @pickynotes/desktop` und Liste/Tab/Theme von Hand prüfen. |
+| LLM-Reranking | Bewusst nicht gebaut: zusätzliche `claude -p`-Aufrufe pro Suche gegen das Tageslimit; RRF über FTS+Trigramm+Vektor liefert die Treffer. | Rerank-Pass über die Top-N in `hybridSearch`, wenn die Qualität es verlangt. |
+| Gerätetoken mit Scope (z. B. nur Mail-Eingang) | Der Mail-Dienst nutzt einen normalen Gerätetoken; wer ihn hat, kann auch lesen. Für v1 (Single-User, eigener Dienst) akzeptiert. | Spalte `scope` an `devices`, Auth-Middleware je Route prüfen. |
+| Mobile, Share-Sheet, Push-Kontext, Sortierdienst | Außerhalb v1 laut Briefing. | – |
+| Spec-Punkte 7a/7b/13b/17b | Die Spec (Claude-Docs-Artefakt) war nicht lesbar (kein Docs-Connector). Gearbeitet wurde nur nach Briefing + Kurzfassung; nichts geraten. | Bitte gegen die Spec abgleichen und die vier Punkte nennen. |
+| Browser-Test (Playwright) des Editors | Kein Gate; Ersatz ist der jsdom-Test mit dem echten Atomic Editor (Listen, Enter, Tab). Layout-abhängiges Verhalten (Cursor-Position, Rendering) deckt jsdom nicht ab. | Manuell im Vite-Dev-Server (`npm run dev -w @pickynotes/desktop`, Port 1420). |

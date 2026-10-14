@@ -448,6 +448,15 @@ describe("object store for large attachments", () => {
     await expect(readdir(path.join(root, "raw/attachments"))).rejects.toThrow(); // the vault holds no copy
   });
 
+  it("the extract in the note is capped at the text-capture ceiling; the object keeps the full file", async () => {
+    useStore();
+    objects.set("attachments/01CAP/a.txt", { body: Buffer.alloc(250_000, "x"), auth: null });
+    await handlers.extract(deps, { noteId: "01CAP", objectKey: "attachments/01CAP/a.txt", filename: "a.txt", mime: "text/plain", source: "imported", kind: "file", caption: "", createdAt: "2026-01-01T00:00:00.000Z" });
+    const capped = await readFile(path.join(root, "raw/01CAP.md"), "utf8");
+    expect(capped.length).toBeLessThan(205_000);
+    expect(capped).toContain("gekürzt, Volltext im Anhang");
+  });
+
   it("a large PDF is downloaded to a temp file for the model and the temp file is removed afterwards", async () => {
     useStore();
     let seen: { path: string; existed: boolean; size: number } | undefined;
