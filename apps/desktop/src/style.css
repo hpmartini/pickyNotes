@@ -1,0 +1,18 @@
+:root { color-scheme: light dark; --bg: #fff; --fg: #1a1a1a; --muted: #666; --line: #d8d8d8; --accent: #5b3fd1; }
+@media (prefers-color-scheme: dark) { :root { --bg: #16161a; --fg: #ececf0; --muted: #9a9aa5; --line: #34343c; --accent: #9b86ff; } }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 -apple-system, system-ui, sans-serif; }
+main { display: flex; flex-direction: column; height: 100vh; padding: 12px 16px; box-sizing: border-box; gap: 8px; }
+nav { display: flex; gap: 4px; }
+button, .button, input { font: inherit; color: inherit; background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+input { cursor: text; }
+button:focus-visible, .button:focus-within, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+button[aria-current="true"], button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+button:disabled { opacity: 0.5; cursor: default; }
+section { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 8px; }
+.editor { flex: 1; min-height: 160px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.actions { display: flex; gap: 8px; }
+form[role="search"] { display: flex; gap: 8px; } form[role="search"] input { flex: 1; }
+form[aria-label="Einstellungen"] { display: grid; gap: 8px; max-width: 420px; }
+label { display: grid; gap: 2px; }
+.hits { list-style: none; padding: 0; overflow: auto; } .hits li { padding: 8px 0; border-bottom: 1px solid var(--line); }
+.hits p { margin: 2px 0; } small { color: var(--muted); }

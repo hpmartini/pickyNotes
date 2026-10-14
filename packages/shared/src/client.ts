@@ -6,6 +6,12 @@ export interface ClientOptions {
   fetch?: typeof fetch;
 }
 
+export class ApiError extends Error {
+  constructor(readonly status: number, message: string) {
+    super(message);
+  }
+}
+
 /** Thin REST client shared by CLI and desktop app. */
 export function createClient({ baseUrl, token, fetch: f = globalThis.fetch }: ClientOptions) {
   async function call<T>(path: string, init?: RequestInit): Promise<T> {
@@ -13,7 +19,7 @@ export function createClient({ baseUrl, token, fetch: f = globalThis.fetch }: Cl
       ...init,
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json", ...init?.headers },
     });
-    if (!res.ok) throw new Error(`${init?.method ?? "GET"} ${path} -> ${res.status} ${await res.text()}`);
+    if (!res.ok) throw new ApiError(res.status, `${init?.method ?? "GET"} ${path} -> ${res.status} ${await res.text()}`);
     return (await res.json()) as T;
   }
   const qs = (o: Record<string, string | undefined>) =>
