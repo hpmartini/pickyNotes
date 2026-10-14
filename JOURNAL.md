@@ -83,3 +83,6 @@ VPS-Deployment (kein Zugang), `claude -p`-Login im Container, echte WhisperStorm
 5. VPS-Deployment nach den README-Schritten durchführen und `claude -p`-Login machen.
 6. Editor einmal von Hand im Tauri-Fenster prüfen (Listen, Tab, hell/dunkel).
 7. `package-lock.json`: neben `aws4fetch` wurden zwei veraltete Einträge (`@tauri-apps/plugin-dialog`, `plugin-shell`) entfernt, die in keiner `package.json` standen.
+
+## Nachtrag: Typecheck-Gate
+Nach den Redelivery-Tests (`app.test.ts`) war `npm run typecheck` rot (TS2322): `expectUntouched` erwartete `() => Promise<Response>`, `post` liefert aber `Response | Promise<Response>` (Hono `app.request`). Fix: Parametertyp auf `() => Response | Promise<Response>` geweitet. Danach grün: typecheck (alle Workspaces), `npm test` (server 73 + 10 PG übersprungen, desktop 17, cli 5, shared 2), PG auf `picky_test` 83/83.

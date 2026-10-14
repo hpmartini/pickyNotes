@@ -412,7 +412,7 @@ describe("redelivery after the note was moved and edited", () => {
     await post("/admin/reindex", {}, "100.64.0.1");
     queue.pending = [];
   };
-  const expectUntouched = async (id: string, clientId: string, again: () => Promise<Response>) => {
+  const expectUntouched = async (id: string, clientId: string, again: () => Response | Promise<Response>) => {
     const before = await repo.getNote(id);
     expect(before).toMatchObject({ path: "wiki/umgezogen.md", status: "curated", tags: ["mein-tag"] });
     expect(before!.body).toContain("Meine Ergänzung");
