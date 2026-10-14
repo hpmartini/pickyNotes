@@ -1,0 +1,6 @@
+# Gates for `mw orchestrate` runs on this repo (TypeScript npm-workspaces monorepo).
+gate_timeout = 900
+gates = [
+  ["npm", "run", "typecheck"],
+  ["npm", "test"],
+]
