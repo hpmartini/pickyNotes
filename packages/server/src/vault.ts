@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { link, mkdir, open, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
+import { link, mkdir, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import matter from "gray-matter";
 
@@ -115,12 +115,10 @@ export class Vault {
     const safe = path.basename(filename).replace(/[^\w.\-]+/g, "_").slice(-100) || "file";
     const rel = `raw/attachments/${id}-${safe}`;
     await mkdir(this.abs("raw/attachments"), { recursive: true });
-    const fh = await open(this.abs(rel), "w"); // <id>- prefix is unique per capture; a resumed capture rewrites its own (possibly truncated) file
-    try {
-      await fh.writeFile(bytes);
-    } finally {
-      await fh.close();
-    }
+    // temp + rename: a resumed capture (same unique <id>-) replaces its own possibly truncated file; rename never writes through a symlink
+    const tmp = `${this.abs(rel)}.${randomUUID()}.tmp`;
+    await writeFile(tmp, bytes, { flag: "wx" });
+    await rename(tmp, this.abs(rel));
     return rel;
   }
 
