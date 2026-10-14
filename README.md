@@ -43,6 +43,8 @@ DATABASE_URL=postgres://postgres:dev@localhost:5544/postgres VAULT_PATH=$HOME/va
 curl -XPOST localhost:8787/admin/devices -H 'content-type: application/json' -d '{"name":"mac"}'   # Token, nur einmal sichtbar
 ```
 
+Belegt ein anderer Dienst Port 8787 (z. B. auf `127.0.0.1`), mit `PORT=8790` starten und überall `http://127.0.0.1:8790` verwenden (`localhost` kann je nach Programm auf IPv4 oder IPv6 und damit auf den falschen Dienst zeigen). Server-URL und Token trägt man in der App unter „Einstellungen“ ein.
+
 Optional lokal dazu (alles per Umgebungsvariable abschaltbar, Defaults = aus):
 
 ```sh
