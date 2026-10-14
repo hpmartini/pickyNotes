@@ -7,6 +7,23 @@ import type { CaptureQueue, QueuedCapture, Send } from "./lib/queue";
 
 const MAX_BYTES = 10 * 1024 * 1024; // server default; larger files are rejected there too
 
+// The draft survives tab switches (CaptureView unmounts) and restarts.
+const DRAFT_KEY = "picky.draft";
+const loadDraft = () => {
+  try {
+    return localStorage.getItem(DRAFT_KEY) ?? "";
+  } catch {
+    return "";
+  }
+};
+const saveDraft = (text: string) => {
+  try {
+    text ? localStorage.setItem(DRAFT_KEY, text) : localStorage.removeItem(DRAFT_KEY);
+  } catch {
+    /* storage unavailable: draft stays in memory only */
+  }
+};
+
 interface Props {
   queue: CaptureQueue;
   send: Send;
@@ -14,7 +31,12 @@ interface Props {
 }
 
 export function CaptureView({ queue, send, screenshot }: Props) {
-  const [text, setText] = useState("");
+  const [text, setText] = useState(loadDraft);
+  useEffect(() => saveDraft(text), [text]);
+  const textRef = useRef(text);
+  textRef.current = text;
+  // Without a stable documentId the editor's identity is its initial markdownSource, so every keystroke would remount it and drop focus.
+  const [docId, setDocId] = useState(0);
   const [status, setStatus] = useState("");
   const [recording, setRecording] = useState(false);
   const [rejected, setRejected] = useState<QueuedCapture[]>([]);
@@ -60,7 +82,12 @@ export function CaptureView({ queue, send, screenshot }: Props) {
     if (!text.trim()) return;
     const sent = text;
     // The user may keep typing while the send is pending; clear only if the editor still holds what was sent. A rejected draft stays.
-    if (await submit({ kind: "text", source: "typed", text: sent })) setText((current) => (current === sent ? "" : current));
+    if (await submit({ kind: "text", source: "typed", text: sent })) {
+      if (textRef.current === sent) {
+        setText("");
+        setDocId((n) => n + 1); // remount the editor empty; markdownSource is only read at mount
+      }
+    }
   }
 
   async function toggleRecording() {
@@ -102,7 +129,7 @@ export function CaptureView({ queue, send, screenshot }: Props) {
   return (
     <section aria-label="Erfassen">
       <div className="editor">
-        <AtomicCodeMirrorEditor markdownSource={text} onMarkdownChange={setText} />
+        <AtomicCodeMirrorEditor documentId={`capture-${docId}`} markdownSource={text} onMarkdownChange={setText} />
       </div>
       <div className="actions">
         <button onClick={sendText} disabled={!text.trim()}>Speichern</button>

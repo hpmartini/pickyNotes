@@ -1,5 +1,6 @@
 :root { color-scheme: light dark; --bg: #fff; --fg: #1a1a1a; --muted: #666; --line: #d8d8d8; --accent: #5b3fd1; }
 @media (prefers-color-scheme: dark) { :root { --bg: #16161a; --fg: #ececf0; --muted: #9a9aa5; --line: #34343c; --accent: #9b86ff; } }
+.editor { --atomic-editor-bg: var(--bg); --atomic-editor-fg: var(--fg); }
 body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 -apple-system, system-ui, sans-serif; }
 main { display: flex; flex-direction: column; height: 100vh; padding: 12px 16px; box-sizing: border-box; gap: 8px; }
 nav { display: flex; gap: 4px; }

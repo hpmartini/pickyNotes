@@ -6,17 +6,41 @@ import { CaptureView } from "./CaptureView";
 import { CaptureQueue } from "./lib/queue";
 
 // CodeMirror needs real layout; a textarea stands in for the editor in jsdom.
-vi.mock("@atomic-editor/editor", () => ({
-  AtomicCodeMirrorEditor: ({ markdownSource, onMarkdownChange }: { markdownSource: string; onMarkdownChange: (s: string) => void }) => (
-    <textarea aria-label="Editor" value={markdownSource} onChange={(e) => onMarkdownChange(e.target.value)} />
-  ),
-}));
+// Like the real editor, it reads markdownSource only at mount and remounts when `documentId ?? markdownSource` changes.
+const editorMounts = vi.hoisted(() => ({ count: 0 }));
+vi.mock("@atomic-editor/editor", async () => {
+  const { useEffect } = await import("react");
+  type P = { markdownSource: string; documentId?: string; onMarkdownChange: (s: string) => void };
+  const Inner = ({ markdownSource, onMarkdownChange }: P) => {
+    useEffect(() => void editorMounts.count++, []);
+    return <textarea aria-label="Editor" defaultValue={markdownSource} onChange={(e) => onMarkdownChange(e.target.value)} />;
+  };
+  return { AtomicCodeMirrorEditor: (p: P) => <Inner key={p.documentId ?? p.markdownSource} {...p} /> };
+});
 vi.mock("@atomic-editor/editor/styles.css", () => ({}));
 
-afterEach(cleanup);
+afterEach(() => (cleanup(), localStorage.clear()));
 let n = 0;
 
 describe("CaptureView", () => {
+  it("restores the draft after the view is unmounted and mounted again", () => {
+    const queue = new CaptureQueue(`c${n++}`);
+    const first = render(<CaptureView queue={queue} send={vi.fn()} />);
+    fireEvent.change(screen.getByLabelText("Editor"), { target: { value: "- Entwurf" } });
+    first.unmount();
+    render(<CaptureView queue={queue} send={vi.fn()} />);
+    expect((screen.getByLabelText("Editor") as HTMLTextAreaElement).value).toBe("- Entwurf");
+  });
+
+  it("keeps the same editor instance (and focus) while typing", () => {
+    editorMounts.count = 0;
+    render(<CaptureView queue={new CaptureQueue(`c${n++}`)} send={vi.fn()} />);
+    const editor = screen.getByLabelText("Editor");
+    for (const value of ["a", "ab", "abc"]) fireEvent.change(editor, { target: { value } });
+    expect(screen.getByLabelText("Editor")).toBe(editor);
+    expect(editorMounts.count).toBe(1);
+  });
+
   it("sends typed text through the queue and clears the editor", async () => {
     const send = vi.fn(async () => ({ id: "1" }));
     render(<CaptureView queue={new CaptureQueue(`c${n++}`)} send={send} />);
