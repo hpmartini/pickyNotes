@@ -90,7 +90,12 @@ Hotkey `Cmd+Shift+Space` holt das Fenster nach vorn (Schließen versteckt nur). 
 - **Nicht gebaut:** S3-kompatibler Store (Anhänge > `MAX_ATTACHMENT_MB` werden mit 413 abgelehnt), LLM-Reranking (nur RRF), Mobile/Share-Sheet/Push-Kontext/Sortierdienst (außerhalb v1).
 - Ein Embedding pro Notiz (erste 2000 Zeichen), keine Chunks.
 - Screenshot/Datei-Extraktion läuft über `claude -p` mit `Read` nur auf genau diese Datei; Textdateien werden ohne LLM gelesen.
-- Compare-before-write hat ein kleines Zeitfenster zwischen Prüfung und `rename`; bei gleichzeitig schreibenden Sync-Tools ggf. Locking ergänzen.
+- Vault-Schreibzugriffe sind pro Notiz im Prozess serialisiert (Hash-Prüfung im Lock, eindeutige Temp-Datei). Compare-before-write hat gegen *externe* Schreiber (Syncthing/Obsidian) weiter ein kleines Zeitfenster zwischen letzter Prüfung und `rename`; bei Konflikten wird abgebrochen und neu gelesen, bei Bedarf Datei-Locking ergänzen.
+- `@claude`-Anweisungen laufen gestuft (`claimed → callout_written → executed → published`, Ergebnis in der DB); ein Retry setzt nach der letzten Stufe fort und ruft das Modell nicht erneut auf. Zwei Worker, die dieselbe Stufe gleichzeitig fortsetzen, sind nicht per Compare-and-Set abgesichert (die Queue liefert pro Notiz einen Job).
+- Capture-Dedupe über `clientId` (`notes.client_id`, unique) lebt nur in der DB: nach einem Neuaufbau aus dem Vault (`reindex` auf leerer DB) sind alte `clientId`s weg. Zwei exakt gleichzeitige Erstversuche können eine verwaiste Datei in `raw/` hinterlassen (zweiter Insert scheitert, Retry löst auf).
+- Wiederaufnahme von `finishNote` (Retry nach Teillauf) stellt eine fehlende DB-Zeile aus der Datei her, die kuratierte Summary bleibt bis zum nächsten `reindex` leer.
+- Abgelehnte Captures (4xx außer 401/429) bleiben in der Desktop-Warteschlange und sind in der Capture-Ansicht als „Abgelehnt“ mit „Erneut senden“/„Verwerfen“ sichtbar; der Entwurf im Editor bleibt erhalten.
+- Postgres-Pfad (`PgRepo`, Migrationen 001/002) ist gegen `pgvector/pgvector:pg16` geprüft (`DATABASE_URL=… npm test -w @pickynotes/server`); die Gates selbst laufen ohne DB.
 - Tauri/Rust-Teil: `cargo check` ok, aber weder `tauri build` noch Lauf der App geprüft; Mikrofon-/Screenshot-/Hotkey-Pfade sind nicht von den Test-Gates abgedeckt (nur Queue-Logik und Capture-Komponente).
 - `claude -p` mit Headless-Subscription-Login auf dem VPS ist nicht verifiziert.
 - Dev-Abhängigkeiten melden `npm audit`-Funde (vitest/tinypool, sharp via transformers.js); vor produktivem Einsatz prüfen.

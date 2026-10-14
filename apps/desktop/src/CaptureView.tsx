@@ -1,9 +1,9 @@
 import { AtomicCodeMirrorEditor } from "@atomic-editor/editor";
 import "@atomic-editor/editor/styles.css";
 import type { CaptureInput } from "@pickynotes/shared";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { blobToBase64 } from "./lib/base64";
-import type { CaptureQueue, Send } from "./lib/queue";
+import type { CaptureQueue, QueuedCapture, Send } from "./lib/queue";
 
 const MAX_BYTES = 10 * 1024 * 1024; // server default; larger files are rejected there too
 
@@ -17,20 +17,50 @@ export function CaptureView({ queue, send, screenshot }: Props) {
   const [text, setText] = useState("");
   const [status, setStatus] = useState("");
   const [recording, setRecording] = useState(false);
+  const [rejected, setRejected] = useState<QueuedCapture[]>([]);
   const recorder = useRef<MediaRecorder | null>(null);
 
-  /** Store first (never lose a thought), then try to deliver. */
-  async function submit(input: CaptureInput) {
-    await queue.enqueue(input);
-    await queue.flush(send);
-    const left = await queue.pending();
+  /** Reports the queue state; false if the item with `key` was rejected by the server. */
+  async function settle(key: number): Promise<boolean> {
+    const items = await queue.list();
+    setRejected(items.filter((i) => i.rejected));
+    const mine = items.find((i) => i.key === key);
+    if (mine?.rejected) {
+      setStatus(`Abgelehnt: ${mine.rejected}`);
+      return false;
+    }
+    const left = items.filter((i) => !i.rejected).length;
     setStatus(left ? `Offline gepuffert (${left} in Warteschlange)` : "Gesendet");
+    return true;
+  }
+
+  useEffect(() => {
+    void queue.list().then((items) => setRejected(items.filter((i) => i.rejected)));
+  }, [queue]);
+
+  /** Store first (never lose a thought), then try to deliver. */
+  async function submit(input: CaptureInput): Promise<boolean> {
+    const key = await queue.enqueue(input);
+    await queue.flush(send);
+    return settle(key);
+  }
+
+  async function retry(key: number) {
+    await queue.retry(key);
+    await queue.flush(send);
+    await settle(key);
+  }
+
+  async function discard(key: number) {
+    await queue.discard(key);
+    setRejected((r) => r.filter((i) => i.key !== key));
   }
 
   async function sendText() {
     if (!text.trim()) return;
-    await submit({ kind: "text", source: "typed", text });
-    setText("");
+    const sent = text;
+    // The user may keep typing while the send is pending; clear only if the editor still holds what was sent. A rejected draft stays.
+    if (await submit({ kind: "text", source: "typed", text: sent })) setText((current) => (current === sent ? "" : current));
   }
 
   async function toggleRecording() {
@@ -84,6 +114,19 @@ export function CaptureView({ queue, send, screenshot }: Props) {
         </label>
       </div>
       <p role="status" aria-live="polite">{status}</p>
+      {rejected.length > 0 && (
+        <section aria-label="Abgelehnte Captures">
+          <h2>Abgelehnt</h2>
+          <ul>
+            {rejected.map((i) => (
+              <li key={i.key}>
+                {(i.input.text ?? i.input.filename ?? i.input.kind).slice(0, 60)} – {i.rejected}{" "}
+                <button onClick={() => retry(i.key!)}>Erneut senden</button> <button onClick={() => discard(i.key!)}>Verwerfen</button>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
     </section>
   );
 }

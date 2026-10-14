@@ -43,6 +43,27 @@ describe("CaptureQueue", () => {
     }
   });
 
+  it("gives every capture a stable clientId that survives retries; rejected items can be retried or discarded", async () => {
+    const q = fresh();
+    const k1 = await q.enqueue(cap("a"));
+    const k2 = await q.enqueue({ ...cap("b"), clientId: "mine" });
+    const seen: CaptureInput[] = [];
+    await q.flush(async (i) => {
+      seen.push(i);
+      throw new ApiError(400, "invalid");
+    });
+    expect(seen[0]!.clientId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(seen[1]!.clientId).toBe("mine");
+
+    await q.retry(k1);
+    expect(await q.pending()).toBe(1);
+    const again: CaptureInput[] = [];
+    await q.flush(async (i) => void again.push(i));
+    expect(again).toEqual([seen[0]]); // same clientId as the first attempt
+    await q.discard(k2);
+    expect(await q.list()).toEqual([]);
+  });
+
   it("concurrent flushes deliver each item once", async () => {
     const q = fresh();
     await q.enqueue(cap("a"));

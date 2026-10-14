@@ -25,12 +25,25 @@ export class CaptureQueue {
     this.db = openDB(name, 1, { upgrade: (db) => void db.createObjectStore(STORE, { keyPath: "key", autoIncrement: true }) });
   }
 
-  async enqueue(input: CaptureInput): Promise<void> {
-    await (await this.db).add(STORE, { input, queuedAt: Date.now() } satisfies QueuedCapture);
+  /** Stores the capture with a stable clientId (the server dedupes retries on it) and returns its queue key. */
+  async enqueue(input: CaptureInput): Promise<number> {
+    const item = { input: { ...input, clientId: input.clientId ?? crypto.randomUUID() }, queuedAt: Date.now() } satisfies QueuedCapture;
+    return (await (await this.db).add(STORE, item)) as number;
   }
 
   async list(): Promise<QueuedCapture[]> {
     return (await this.db).getAll(STORE);
+  }
+
+  /** Puts a rejected item back into the send queue. */
+  async retry(key: number): Promise<void> {
+    const db = await this.db;
+    const item = (await db.get(STORE, key)) as QueuedCapture | undefined;
+    if (item) await db.put(STORE, { ...item, rejected: undefined });
+  }
+
+  async discard(key: number): Promise<void> {
+    await (await this.db).delete(STORE, key);
   }
 
   /** Items still waiting to be sent. */
