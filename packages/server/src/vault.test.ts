@@ -59,6 +59,26 @@ describe("Vault guardrails", () => {
     expect((await vault.scan()).files).toEqual(["x.md"]);
   });
 
+  it("keeps a ---js body verbatim and never executes it (new note and curate)", async () => {
+    const body = "---js\n(globalThis.__pwned2 = true, {})\n---\nrest\n";
+    await vault.writeNew("01D", { id: "01D" }, body);
+    const f = await vault.read("raw/01D.md");
+    expect(f.body).toBe(body);
+    const after = await vault.curate("raw/01D.md", f.hash, { summary: "s", frontmatter: { status: "curated" } });
+    expect(after.data).toMatchObject({ id: "01D", status: "curated" });
+    expect(after.body.endsWith(body)).toBe(true);
+    expect((globalThis as Record<string, unknown>).__pwned2).toBeUndefined();
+  });
+
+  it("serialises parallel curates per path: one wins, the rest conflict cleanly (no ENOENT)", async () => {
+    await vault.writeNew("01E", { id: "01E" }, "x");
+    const f = await vault.read("raw/01E.md");
+    const results = await Promise.allSettled(Array.from({ length: 8 }, (_, i) => vault.curate("raw/01E.md", f.hash, { frontmatter: { n: i } })));
+    expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+    for (const r of results) if (r.status === "rejected") expect(r.reason).toBeInstanceOf(ConflictError);
+    expect((await vault.scan()).files).toEqual(["raw/01E.md"]); // no leftover .tmp
+  });
+
   it("scan skips sync-conflict files and .obsidian, reports conflicts separately", async () => {
     await mkdir(path.join(root, "wiki_x"), { recursive: true });
     await mkdir(path.join(root, ".obsidian"));

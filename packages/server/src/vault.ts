@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { link, mkdir, open, readFile, readdir, rename, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import matter from "gray-matter";
@@ -30,6 +30,13 @@ const noCode = () => {
 /** gray-matter evaluates `---js` frontmatter as code; vault files are untrusted input, so only YAML/JSON is allowed. */
 const parseNote = (raw: string) => matter(raw, { engines: { js: noCode, javascript: noCode, coffee: noCode, coffeescript: noCode, cson: noCode } });
 
+/**
+ * Never pass the body through matter.stringify: it re-parses a string body with the default engines,
+ * so a body starting with `---js` would execute on the server. The yaml engine is gray-matter's safeDump.
+ */
+const yamlEngine = (matter as unknown as { engines: { yaml: { stringify(d: object): string } } }).engines.yaml;
+const serialize = (data: Record<string, unknown>, body: string) => `---\n${yamlEngine.stringify(data)}---\n${body}`;
+
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 const SKIP_DIRS = new Set([".obsidian", ".git", ".trash", "node_modules"]);
 
@@ -57,7 +64,18 @@ function replaceBlock(body: string, start: string, end: string, inner: string, w
  * curator's frontmatter + marked blocks, written compare-before-write.
  */
 export class Vault {
+  /** Tail of the write chain per resolved path; serialises in-process writers of one note. */
+  private tails = new Map<string, Promise<void>>();
+
   constructor(readonly root: string) {}
+
+  private serial<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const run = (this.tails.get(key) ?? Promise.resolve()).then(fn);
+    const tail = run.then(() => {}, () => {});
+    this.tails.set(key, tail);
+    void tail.then(() => this.tails.get(key) === tail && this.tails.delete(key));
+    return run;
+  }
 
   private abs(rel: string): string {
     const p = path.resolve(this.root, rel);
@@ -82,7 +100,7 @@ export class Vault {
   /** Creates raw/<id>.md; fails if it already exists (flag wx), so nothing is ever overwritten. */
   async writeNew(id: string, data: Record<string, unknown>, body: string): Promise<string> {
     const rel = `raw/${id}.md`;
-    await this.atomicCreate(rel, matter.stringify(body.endsWith("\n") ? body : body + "\n", data));
+    await this.atomicCreate(rel, serialize(data, body.endsWith("\n") ? body : body + "\n"));
     return rel;
   }
 
@@ -102,7 +120,7 @@ export class Vault {
   private async atomicCreate(rel: string, content: string) {
     const target = this.abs(rel);
     await mkdir(path.dirname(target), { recursive: true });
-    const tmp = `${target}.${process.pid}.tmp`;
+    const tmp = `${target}.${randomUUID()}.tmp`;
     await writeFile(tmp, content, { flag: "wx" });
     try {
       await link(tmp, target); // atomic and fails with EEXIST: never clobbers an existing note
@@ -111,22 +129,29 @@ export class Vault {
     }
   }
 
-  /** Compare-before-write: aborts with ConflictError if the file changed since `expectedHash`. */
-  async curate(rel: string, expectedHash: string, patch: CuratePatch): Promise<VaultFile> {
+  /** Compare-before-write: aborts with ConflictError if the file changed since `expectedHash`. Serialised per path. */
+  curate(rel: string, expectedHash: string, patch: CuratePatch): Promise<VaultFile> {
     const target = this.abs(rel);
-    const raw = await readFile(target, "utf8");
-    if (sha(raw) !== expectedHash) throw new ConflictError(`${rel} changed since read`);
-    const m = parseNote(raw);
-    let body = m.content;
-    if (patch.summary !== undefined) body = replaceBlock(body, SUMMARY_START, SUMMARY_END, `> ${patch.summary.replace(/\n+/g, "\n> ")}`, "top");
-    if (patch.claudeBlock !== undefined) body = replaceBlock(body, CLAUDE_START, CLAUDE_END, patch.claudeBlock, "bottom");
-    const out = matter.stringify(body, { ...m.data, ...patch.frontmatter });
-    // shortcut: tiny window between this re-check and rename; upgrade to file locks if a sync tool writes concurrently
-    if (sha(await readFile(target, "utf8")) !== expectedHash) throw new ConflictError(`${rel} changed during write`);
-    const tmp = `${target}.${process.pid}.tmp`;
-    await writeFile(tmp, out);
-    await rename(tmp, target);
-    return this.read(rel);
+    return this.serial(target, async () => {
+      const raw = await readFile(target, "utf8");
+      if (sha(raw) !== expectedHash) throw new ConflictError(`${rel} changed since read`);
+      const m = parseNote(raw);
+      let body = m.content;
+      if (patch.summary !== undefined) body = replaceBlock(body, SUMMARY_START, SUMMARY_END, `> ${patch.summary.replace(/\n+/g, "\n> ")}`, "top");
+      if (patch.claudeBlock !== undefined) body = replaceBlock(body, CLAUDE_START, CLAUDE_END, patch.claudeBlock, "bottom");
+      const out = serialize({ ...m.data, ...patch.frontmatter }, body);
+      // shortcut: only in-process writers are locked; an external sync tool can still slip into the window below, upgrade to file locks if that happens
+      if (sha(await readFile(target, "utf8")) !== expectedHash) throw new ConflictError(`${rel} changed during write`);
+      const tmp = `${target}.${randomUUID()}.tmp`;
+      try {
+        await writeFile(tmp, out);
+        await rename(tmp, target);
+      } catch (e) {
+        await unlink(tmp).catch(() => {}); // only our own temp file
+        throw e;
+      }
+      return this.read(rel);
+    });
   }
 
   /** Walks all .md files; sync-conflict copies are reported separately and never returned as notes. */

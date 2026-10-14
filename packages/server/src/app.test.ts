@@ -88,6 +88,17 @@ describe("capture pipeline", () => {
     expect((await call("/context")).status).toBe(400);
   });
 
+  it("a capture or import whose body starts with ---js never executes code and is stored verbatim", async () => {
+    const body = "---js\n(globalThis.__pwned3 = true, {})\n---\nrest";
+    for (const source of ["typed", "imported"] as const) {
+      const { id } = (await (await post("/captures", { kind: "text", source, text: body })).json()) as { id: string };
+      await queue.drain(deps); // curate rewrites the file
+      expect(queue.failures).toEqual([]);
+      expect(await readFile(path.join(root, `raw/${id}.md`), "utf8")).toContain(`\n\n${body}\n`);
+    }
+    expect((globalThis as Record<string, unknown>).__pwned3).toBeUndefined();
+  });
+
   it("validates input and enforces the attachment size limit", async () => {
     expect((await post("/captures", { kind: "text", source: "typed" })).status).toBe(400);
     expect((await post("/captures", { kind: "text", source: "typed", text: "  " })).status).toBe(400);
