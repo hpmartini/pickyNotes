@@ -30,7 +30,7 @@ services:
     volumes:
       - ${VAULT_HOST_PATH:?set VAULT_HOST_PATH in .env}:/vault
       - claude-auth:/home/node/.claude
-      - models:/app/node_modules/@huggingface/transformers/.cache
+      - models:/models
 
   # Optional (docker compose --profile s3 up): S3-compatible store for attachments above MAX_ATTACHMENT_MB.
   # Set S3_ENDPOINT=http://s3:9000 in .env to use it; any other S3 endpoint works the same way.
@@ -55,6 +55,9 @@ services:
     image: ghcr.io/speaches-ai/speaches:0.8.3-cpu
     profiles: [whisper]
     restart: unless-stopped
+    environment:
+      # the Xet download path failed with TLS errors on a corporate-style network; plain HTTPS works everywhere
+      HF_HUB_DISABLE_XET: "1"
     volumes:
       - whispercache:/home/ubuntu/.cache/huggingface/hub
     ports:

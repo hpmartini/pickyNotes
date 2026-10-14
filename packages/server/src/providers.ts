@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Repo } from "./repo.js";
 
 // ---------- LLM ----------
@@ -66,9 +67,14 @@ export interface EmbeddingProvider {
 /** Local multilingual-e5-small via transformers.js; the model is loaded lazily on first use. */
 export class LocalEmbedding implements EmbeddingProvider {
   private pipe?: Promise<(t: string, o: object) => Promise<{ data: Float32Array }>>;
+  /** The library's default cache path (inside node_modules) was not usable under tsx ("Unable to get model file path or buffer"), so the model directory is explicit. */
+  constructor(private cacheDir = process.env.MODEL_CACHE_DIR || join(homedir(), ".cache", "pickynotes", "models")) {}
   async embed(text: string, kind: "query" | "passage") {
     const mod = "@huggingface/transformers"; // variable: keeps the heavy optional dependency out of typecheck/tests
-    this.pipe ??= import(mod).then((m) => m.pipeline("feature-extraction", "Xenova/multilingual-e5-small"));
+    this.pipe ??= import(mod).then((m) => {
+      m.env.cacheDir = this.cacheDir;
+      return m.pipeline("feature-extraction", "Xenova/multilingual-e5-small");
+    });
     try {
       const out = await (await this.pipe)(`${kind}: ${text.slice(0, 2000)}`, { pooling: "mean", normalize: true });
       return Array.from(out.data);
