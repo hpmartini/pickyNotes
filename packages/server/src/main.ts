@@ -4,7 +4,8 @@ import pg from "pg";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { handlers } from "./jobs.js";
-import { ClaudeCliProvider, LimitedLlm, LocalEmbedding, WhisperStormTranscription } from "./providers.js";
+import { S3ObjectStore } from "./object-store.js";
+import { ClaudeCliProvider, LimitedLlm, LocalEmbedding, WhisperTranscription } from "./providers.js";
 import { PgRepo, migrate } from "./pg-repo.js";
 import type { Deps, JobName, JobQueue } from "./services.js";
 import { Vault } from "./vault.js";
@@ -26,9 +27,10 @@ const deps: Deps = {
   vault: new Vault(config.vaultPath),
   llm: new LimitedLlm(new ClaudeCliProvider(), repo, config.claudeDailyLimit),
   embedding: new LocalEmbedding(),
-  transcription: new WhisperStormTranscription(config.whisperUrl, config.whisperToken),
+  transcription: new WhisperTranscription({ url: config.whisperUrl, token: config.whisperToken, api: config.whisperApi, model: config.whisperModel }),
   queue,
   maxAttachmentBytes: config.maxAttachmentBytes,
+  objectStore: config.s3 && new S3ObjectStore(config.s3),
 };
 
 for (const name of Object.keys(handlers) as JobName[]) {

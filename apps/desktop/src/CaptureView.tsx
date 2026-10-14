@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { blobToBase64 } from "./lib/base64";
 import type { CaptureQueue, QueuedCapture, Send } from "./lib/queue";
 
-const MAX_BYTES = 10 * 1024 * 1024; // server default; larger files are rejected there too
+const MAX_BYTES = 100 * 1024 * 1024; // sanity cap against freezing the webview; the server decides (413 above MAX_ATTACHMENT_MB without an object store)
 
 // The draft survives tab switches (CaptureView unmounts) and restarts.
 const DRAFT_KEY = "picky.draft";
@@ -122,7 +122,7 @@ export function CaptureView({ queue, send, screenshot }: Props) {
 
   async function pickFile(file: File | undefined) {
     if (!file) return;
-    if (file.size > MAX_BYTES) return setStatus("Datei größer als 10 MB");
+    if (file.size > MAX_BYTES) return setStatus("Datei größer als 100 MB");
     await submit({ kind: "file", source: "imported", data: await blobToBase64(file), filename: file.name, mime: file.type || undefined });
   }
 

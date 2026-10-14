@@ -10,6 +10,9 @@ export const CLAUDE_END = "<!-- /picky:claude -->";
 
 export class ConflictError extends Error {}
 
+/** Client-supplied names never reach a path or object key unsanitized. */
+export const safeFilename = (filename: string) => path.basename(filename).replace(/[^\w.\-]+/g, "_").slice(-100) || "file";
+
 export interface VaultFile {
   path: string; // vault-relative, posix
   data: Record<string, unknown>;
@@ -112,7 +115,7 @@ export class Vault {
   }
 
   async writeAttachment(id: string, filename: string, bytes: Buffer): Promise<string> {
-    const safe = path.basename(filename).replace(/[^\w.\-]+/g, "_").slice(-100) || "file";
+    const safe = safeFilename(filename);
     const rel = `raw/attachments/${id}-${safe}`;
     await mkdir(this.abs("raw/attachments"), { recursive: true });
     // temp + rename: a resumed capture (same unique <id>-) replaces its own possibly truncated file; rename never writes through a symlink

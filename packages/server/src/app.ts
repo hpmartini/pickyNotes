@@ -114,7 +114,8 @@ export function createApp(deps: AppDeps) {
 
   // Rate limit before auth so token guessing is throttled too.
   app.use("/captures", rateLimiter({ windowMs: 60_000, limit: deps.rateLimitPerMin, keyGenerator: (c) => clientIp(c) ?? "unknown", standardHeaders: "draft-6" }));
-  app.use("/captures", bodyLimit({ maxSize: Math.ceil(deps.maxAttachmentBytes * 1.4) + 1_000_000, onError: (c) => c.json({ error: "payload too large" }, 413) }));
+  // base64 inflates by 4/3; the largest accepted attachment is the object store's limit when one is configured
+  app.use("/captures", bodyLimit({ maxSize: Math.ceil(Math.max(deps.maxAttachmentBytes, deps.objectStore?.maxBytes ?? 0) * 1.4) + 1_000_000, onError: (c) => c.json({ error: "payload too large" }, 413) }));
   app.use("/captures/mail", rateLimiter({ windowMs: 60_000, limit: deps.rateLimitPerMin, keyGenerator: (c) => clientIp(c) ?? "unknown", standardHeaders: "draft-6" }));
   app.use("/captures/mail", bodyLimit({ maxSize: 2_000_000, onError: (c) => c.json({ error: "payload too large" }, 413) }));
   for (const p of ["/captures", "/captures/mail", "/notes/*", "/search", "/context", "/suggestions", "/suggestions/*"]) app.use(p, auth);

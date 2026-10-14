@@ -94,17 +94,28 @@ export interface TranscriptionProvider {
   transcribe(audio: Buffer, filename: string, mime: string): Promise<string>;
 }
 
+export interface WhisperOptions {
+  url?: string;
+  token?: string;
+  /** openai = OpenAI-compatible /v1/audio/transcriptions (speaches/faster-whisper-server); whisperstorm = assumed WhisperStorm contract. */
+  api?: "openai" | "whisperstorm";
+  /** Sent as the `model` form field in openai mode. */
+  model?: string;
+}
+
 /**
- * WhisperStorm HTTP API. ASSUMED contract (unverified): POST multipart field "file" to WHISPER_URL,
- * optional bearer token, JSON response {"text": "..."}.
+ * Both modes: POST multipart field "file" to WHISPER_URL, optional bearer token, JSON response {"text": "..."}.
+ * openai additionally sends the required `model` field. WhisperStorm's real API is unverified: its mode is the assumed contract.
+ * Any failure (unreachable, timeout, non-2xx) throws, so the job queue retries.
  */
-export class WhisperStormTranscription implements TranscriptionProvider {
-  constructor(private url: string | undefined, private token?: string, private f: typeof fetch = fetch) {}
+export class WhisperTranscription implements TranscriptionProvider {
+  constructor(private o: WhisperOptions, private f: typeof fetch = fetch) {}
   async transcribe(audio: Buffer, filename: string, mime: string) {
-    if (!this.url) throw new Error("WHISPER_URL not configured");
+    if (!this.o.url) throw new Error("WHISPER_URL not configured");
     const form = new FormData();
     form.append("file", new Blob([new Uint8Array(audio)], { type: mime }), filename);
-    const res = await this.f(this.url, { method: "POST", body: form, headers: this.token ? { authorization: `Bearer ${this.token}` } : {} });
+    if ((this.o.api ?? "openai") === "openai") form.append("model", this.o.model ?? "Systran/faster-whisper-small");
+    const res = await this.f(this.o.url, { method: "POST", body: form, headers: this.o.token ? { authorization: `Bearer ${this.o.token}` } : {}, signal: AbortSignal.timeout(300_000) });
     if (!res.ok) throw new Error(`whisper ${res.status}`);
     const j = (await res.json()) as { text?: string };
     if (typeof j.text !== "string") throw new Error("whisper: response has no text");

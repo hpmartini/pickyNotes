@@ -5,7 +5,8 @@ import { mentionsClaude } from "./claude-instructions.js";
 import type { EmbeddingProvider, LlmProvider, TranscriptionProvider } from "./providers.js";
 import type { NoteRow, Repo } from "./repo.js";
 import { rrf } from "./search.js";
-import { readSummary, stripPickyBlocks, type Vault } from "./vault.js";
+import type { ObjectStore } from "./object-store.js";
+import { readSummary, safeFilename, stripPickyBlocks, type Vault } from "./vault.js";
 
 export type JobName = "transcribe" | "extract" | "embed" | "curate" | "claude-instruction" | "webhook-deliver";
 export interface JobQueue {
@@ -20,6 +21,8 @@ export interface Deps {
   transcription: TranscriptionProvider;
   queue: JobQueue;
   maxAttachmentBytes: number;
+  /** Optional S3-compatible store for attachments above maxAttachmentBytes. */
+  objectStore?: ObjectStore;
   fetch?: typeof fetch;
 }
 
@@ -84,12 +87,17 @@ export async function capture(deps: Deps, input: CaptureInput): Promise<{ id: st
   }
   if (!input.data) throw new BadCaptureError("data required");
   const bytes = Buffer.from(input.data, "base64");
-  // shortcut: no S3-compatible store yet, larger files are rejected; upgrade when needed
-  if (bytes.length > deps.maxAttachmentBytes) throw new PayloadTooLargeError(`attachment exceeds ${deps.maxAttachmentBytes} bytes`);
+  // Above the vault limit an attachment goes to the object store (if configured); without one it is rejected.
+  const large = bytes.length > deps.maxAttachmentBytes;
+  const limit = large && deps.objectStore ? deps.objectStore.maxBytes : deps.maxAttachmentBytes;
+  if (bytes.length > limit) throw new PayloadTooLargeError(`attachment exceeds ${limit} bytes`);
   const filename = input.filename ?? `${input.kind}.bin`;
-  const attachment = await deps.vault.writeAttachment(id, filename, bytes);
+  const mime = input.mime ?? "application/octet-stream";
+  const objectKey = large ? `attachments/${id}/${safeFilename(filename)}` : undefined;
+  if (objectKey) await deps.objectStore!.put(objectKey, bytes, mime);
+  const attachment = objectKey ? undefined : await deps.vault.writeAttachment(id, filename, bytes);
   const source = input.kind === "voice" ? input.source : "imported"; // OCR/PDF/file content never counts as own input
-  const job = { noteId: id, attachment, filename, mime: input.mime ?? "application/octet-stream", source, kind: input.kind, caption: input.text ?? "", createdAt };
+  const job = { noteId: id, attachment, objectKey, filename, mime, source, kind: input.kind, caption: input.text ?? "", createdAt };
   if (!dup) await deps.repo.upsertNote({ id, path: `raw/${id}.md`, title: filename, body: "", tags: [], summary: null, source, status: "pending", contentHash: null, createdAt, clientId: input.clientId });
   await deps.queue.send(input.kind === "voice" ? "transcribe" : "extract", job);
   return { id };

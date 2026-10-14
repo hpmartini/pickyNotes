@@ -1,4 +1,5 @@
 import { createHmac } from "node:crypto";
+import { existsSync, statSync } from "node:fs";
 import { mkdtemp, readFile, readdir, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -6,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { AppDeps, createApp, hashToken } from "./app.js";
 import { InlineQueue, handlers } from "./jobs.js";
 import { MemoryRepo } from "./memory-repo.js";
+import { S3ObjectStore } from "./object-store.js";
 import { FakeEmbedding, FakeLlm, FakeTranscription } from "./providers.js";
 import { finishNote } from "./services.js";
 import { Vault } from "./vault.js";
@@ -408,6 +410,72 @@ describe("webhooks", () => {
     const c = webhookCalls[0]!;
     const sig = (c.init.headers as Record<string, string>)["x-picky-signature"];
     expect(sig).toBe("sha256=" + createHmac("sha256", "s".repeat(20)).update(c.init.body as string).digest("hex"));
+  });
+});
+
+describe("object store for large attachments", () => {
+  let objects: Map<string, { body: Buffer; auth: string | null }>;
+  /** In-memory S3: path-style /<bucket>/<key>. */
+  const fakeS3 = (async (input: Request | string, init?: RequestInit) => {
+    const req = input instanceof Request ? input : new Request(input, init);
+    const key = decodeURIComponent(new URL(req.url).pathname).replace(/^\/pickynotes\/?/, "");
+    if (req.method === "PUT" && !key) return new Response("", { status: 200 });
+    if (req.method === "PUT") return (objects.set(key, { body: Buffer.from(await req.arrayBuffer()), auth: req.headers.get("authorization") }), new Response("", { status: 200 }));
+    const o = objects.get(key);
+    return o ? new Response(new Uint8Array(o.body)) : new Response("nope", { status: 404 });
+  }) as typeof fetch;
+  const useStore = () => {
+    objects = new Map();
+    deps.objectStore = new S3ObjectStore({ endpoint: "http://s3.test", bucket: "pickynotes", accessKey: "AK", secretKey: "SK", region: "us-east-1", maxAttachmentBytes: 5000 }, fakeS3);
+    app = createApp(deps);
+  };
+  const big = (n = 2000) => Buffer.alloc(n, "x").toString("base64");
+
+  it("a text file above MAX_ATTACHMENT goes to the bucket (signed); the note holds the link and the extract, nothing lands in the vault", async () => {
+    useStore();
+    const r = await post("/captures", { kind: "file", source: "imported", data: big(), filename: "../gross datei.txt", mime: "text/plain" });
+    expect(r.status).toBe(202);
+    const { id } = (await r.json()) as { id: string };
+    const key = `attachments/${id}/gross_datei.txt`;
+    expect([...objects.keys()]).toEqual([key]);
+    expect(objects.get(key)!.body).toHaveLength(2000);
+    expect(objects.get(key)!.auth).toMatch(/^AWS4-HMAC-SHA256 Credential=AK\//);
+    await queue.drain(deps);
+    expect(queue.failures).toEqual([]);
+    const file = await readFile(path.join(root, `raw/${id}.md`), "utf8");
+    expect(file).toContain(`[gross_datei.txt](s3://pickynotes/${key})`);
+    expect(file).toContain("xxxxxxxxxx");
+    await expect(readdir(path.join(root, "raw/attachments"))).rejects.toThrow(); // the vault holds no copy
+  });
+
+  it("a large PDF is downloaded to a temp file for the model and the temp file is removed afterwards", async () => {
+    useStore();
+    let seen: { path: string; existed: boolean; size: number } | undefined;
+    deps.llm = new FakeLlm((r) => {
+      if (r.filePath) seen = { path: r.filePath, existed: existsSync(r.filePath), size: statSync(r.filePath).size };
+      return r.prompt.includes("Return ONLY JSON") ? curatorJson : "# Extrahiert\nRechnung 42";
+    });
+    const { id } = (await (await post("/captures", { kind: "file", source: "imported", data: big(3000), filename: "r.pdf", mime: "application/pdf" })).json()) as { id: string };
+    await queue.drain(deps);
+    expect(queue.failures).toEqual([]);
+    expect(seen).toMatchObject({ existed: true, size: 3000 });
+    expect(existsSync(seen!.path)).toBe(false);
+    expect(await readFile(path.join(root, `raw/${id}.md`), "utf8")).toContain("Rechnung 42");
+  });
+
+  it("without a store, or above the store limit, it is 413", async () => {
+    expect((await post("/captures", { kind: "file", source: "imported", data: big(), filename: "a.pdf" })).status).toBe(413);
+    useStore();
+    expect((await post("/captures", { kind: "file", source: "imported", data: big(6000), filename: "a.pdf" })).status).toBe(413);
+    expect(objects.size).toBe(0);
+  });
+
+  it("a failing bucket write fails the request (500) and leaves no note (the client retries)", async () => {
+    useStore();
+    deps.objectStore = new S3ObjectStore({ endpoint: "http://s3.test", bucket: "pickynotes", accessKey: "AK", secretKey: "SK", region: "r", maxAttachmentBytes: 5000 }, (async () => new Response("down", { status: 503 })) as never);
+    app = createApp(deps);
+    expect((await post("/captures", { kind: "file", source: "imported", data: big(), filename: "a.txt", mime: "text/plain" })).status).toBe(500);
+    expect(repo.notes.size).toBe(0);
   });
 });
 
