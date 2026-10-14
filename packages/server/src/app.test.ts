@@ -335,6 +335,44 @@ describe("resume gaps", () => {
     expect((await repo.getNote(id))!.body).toContain("rotes Auto kaufen");
   });
 
+  it("a text capture whose queue.send failed is resumed by the retry: one note, jobs queued, @claude runs exactly once", async () => {
+    const body = { kind: "text", source: "typed", text: "Idee\n@claude erkläre das", clientId: "cid-text-resume" };
+    vi.spyOn(queue, "send").mockRejectedValueOnce(new Error("queue down")); // first send (embed) of finishNote fails after file + row exist
+    expect((await post("/captures", body)).status).toBeGreaterThanOrEqual(500);
+    expect(queue.pending).toEqual([]);
+    const retry = await post("/captures", body);
+    expect(retry.status).toBe(202);
+    const { id } = (await retry.json()) as { id: string };
+    expect(queue.pending.map((j) => j.name)).toEqual(["embed", "curate", "claude-instruction"]);
+    await queue.drain(deps);
+    expect(queue.failures).toEqual([]);
+    expect([...repo.notes.keys()]).toEqual([id]);
+    expect((await readdir(path.join(root, "raw"))).filter((f) => f.endsWith(".md"))).toEqual([`${id}.md`]);
+    expect(modelCalls()).toBe(1);
+    expect(await repo.getInstructions(id)).toMatchObject([{ stage: "published", status: "done" }]);
+    expect((await repo.getNote(id))!.status).toBe("curated");
+    const again = await post("/captures", body); // a further duplicate re-queues nothing that is finished except the idempotent embed
+    expect(((await again.json()) as { id: string }).id).toBe(id);
+    expect(queue.pending.map((j) => j.name)).toEqual(["embed"]);
+  });
+
+  it("a crash right after the pending callout (stage callout_written) resumes with exactly one model call and one callout", async () => {
+    const id = await captureClaude();
+    const real = repo.updateInstruction.bind(repo);
+    vi.spyOn(repo, "updateInstruction").mockImplementation(async (iid, patch) => {
+      if (patch.stage === "executing") throw new Error("crash");
+      return real(iid, patch);
+    });
+    await expect(handlers["claude-instruction"](deps, { noteId: id })).rejects.toThrow("crash");
+    expect(modelCalls()).toBe(0);
+    expect(await repo.getInstructions(id)).toMatchObject([{ stage: "callout_written" }]);
+    vi.restoreAllMocks();
+    await handlers["claude-instruction"](deps, { noteId: id });
+    expect(modelCalls()).toBe(1);
+    expect(await repo.getInstructions(id)).toMatchObject([{ stage: "published", status: "done" }]);
+    expect((await fileOf(id)).match(/\[!claude\]/g)).toHaveLength(1);
+  });
+
   const note = { id: "01RESUME2", body: "Gedanke", source: "typed" as const, kind: "text", createdAt: "2026-01-01T00:00:00.000Z" };
 
   it("finishNote resume restores a curation that reached the vault but not the row", async () => {

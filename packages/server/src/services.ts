@@ -72,7 +72,9 @@ export async function capture(deps: Deps, input: CaptureInput): Promise<{ id: st
   const dup = input.clientId ? await deps.repo.getNoteByClientId(input.clientId) : null;
   // A placeholder row (voice/file) without raw/<id>.md means the first attempt died before the pipeline job was queued: resume it.
   const incomplete = !!dup && dup.body === "" && !(await access(deps.vault.absPath(dup.path)).then(() => true, () => false));
-  if (dup && !incomplete) return { id: dup.id };
+  // A text capture queues its pipeline inside finishNote, so a row proves nothing about the jobs: always resume (idempotent, re-queues only unfinished work).
+  // shortcut: a retry while the first attempt's curate is still queued sends a second curate; it returns early once the note is curated.
+  if (dup && !incomplete && input.kind !== "text") return { id: dup.id };
   const id = dup?.id ?? ulid();
   const createdAt = dup?.createdAt ?? new Date().toISOString();
   if (input.kind === "text") {
