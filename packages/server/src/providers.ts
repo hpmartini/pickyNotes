@@ -21,8 +21,8 @@ export class ClaudeCliProvider implements LlmProvider {
 
   complete({ prompt, system, filePath }: LlmRequest): Promise<string> {
     // Only the Read tool, and only when a file must be looked at: notes are untrusted input.
-    // Read is limited to exactly that file (anything else is denied in -p mode) and the cwd holds no secrets.
-    const args = ["-p", "--no-session-persistence", ...(system ? ["--append-system-prompt", system] : []), ...(filePath ? ["--allowedTools", `Read(${filePath})`, "--tools", "Read"] : ["--tools", ""])];
+    // Read is limited to exactly that file (`//` = absolute path in permission rules; a single `/` is project-relative) (anything else is denied in -p mode) and the cwd holds no secrets.
+    const args = ["-p", "--no-session-persistence", ...(system ? ["--append-system-prompt", system] : []), ...(filePath ? ["--allowedTools", `Read(/${filePath})`, "--tools", "Read"] : ["--tools", ""])];
     const env = { ...process.env };
     delete env.ANTHROPIC_API_KEY; // subscription only
     delete env.ANTHROPIC_AUTH_TOKEN;

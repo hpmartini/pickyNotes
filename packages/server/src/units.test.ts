@@ -45,6 +45,8 @@ describe("providers", () => {
     await chmod(bin, 0o755);
     process.env.ANTHROPIC_API_KEY = "sk-secret";
     const out = await new ClaudeCliProvider(bin).complete({ prompt: "PROMPT" });
+    const withFile = await new ClaudeCliProvider(bin).complete({ prompt: "P", filePath: "/vault/raw/attachments/x.png" });
+    expect(withFile).toContain("Read(//vault/raw/attachments/x.png)");
     delete process.env.ANTHROPIC_API_KEY;
     expect(out).toContain("key=[]");
     expect(out).toContain("-p");
