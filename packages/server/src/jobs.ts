@@ -108,6 +108,13 @@ export const handlers: Record<JobName, (deps: Deps, p: Payload) => Promise<void>
     );
     const related = (await hybridSearch(deps, `${out.title ?? note.title} ${out.summary}`, 4, note.id)).map((h) => `[[${h.id}]]`);
     const tags = out.tags.map((t) => t.replace(/^#/, "").toLowerCase());
+    // Proposals only: stored for a human decision, never executed. Stored BEFORE the file says `curated` (a retry would otherwise
+    // return early and never create them); idempotent per (note, title), so a retry adds and announces only what is new.
+    const fresh: { id: string; title: string; detail: string }[] = [];
+    for (const s of out.suggestions) {
+      const id = ulid();
+      if (await deps.repo.addSuggestion({ id, noteId: note.id, title: s.title, detail: s.detail })) fresh.push({ id, ...s });
+    }
     // Only frontmatter + summary block; the body stays byte-identical.
     const written = await patchNote(deps, note.path, () => ({
       summary: out.summary,
@@ -115,11 +122,7 @@ export const handlers: Record<JobName, (deps: Deps, p: Payload) => Promise<void>
     }));
     await syncRow(deps, written, { status: "curated", summary: out.summary, tags, title: out.title ?? note.title });
     await emit(deps, "note.curated", note.id, { tags });
-    // Proposals only: stored for a human decision, never executed. Idempotent per (note, title), so a retry emits only what is new.
-    for (const s of out.suggestions) {
-      const id = ulid();
-      if (await deps.repo.addSuggestion({ id, noteId: note.id, title: s.title, detail: s.detail })) await emit(deps, "suggestion.created", note.id, { id, ...s });
-    }
+    for (const s of fresh) await emit(deps, "suggestion.created", note.id, s);
   },
 
   /**

@@ -40,6 +40,10 @@ Auftrag: Briefing vollständig umsetzen, Nicht-Machbares in README („Vertagt�
 - Befund beim Lauf: Die 13-MB-Textdatei wurde ungekürzt in den Notiz-Body übernommen (Schreiben in den Vault minutenlang, bei echtem Text wäre auch die tsvector-Grenze ein Risiko). Fix: Extrakt wird auf 200 000 Zeichen gekappt (wie Text-Capture) mit Marker „gekürzt, Volltext im Anhang“; Test. Neu gebaut und wiederholt: Notiz 211 KB mit `s3://`-Link.
 - Nicht verifiziert: echte Transkription im Whisper-Container (Modell-Download beim ersten Einsatz), `claude -p`-Login im Container, `/context` im Container (der erste Aufruf wartete auf den Download des Embedding-Modells; Verhalten aus Runde 1, nicht neu). Alle eigenen Container/Volumes wieder entfernt (`down -v` nur mit eigenem `-p`), fremde Container unberührt.
 
+**Abschluss-Review (Advisor).**
+- Befund (real): `curate` legte Vorschläge erst nach `patchNote` an. Stürzte der Job danach ab (z. B. `syncRow`), stand `status: curated` schon in der Datei, der Retry kehrte früh zurück → Vorschläge nie in der DB. Fix: Vorschläge vor `patchNote` speichern (idempotent), Events danach. Regressionstest: Erweiterung des Resume-Tests („Kuration in der Datei, nicht in der Zeile“) prüft `listSuggestions`.
+- Dokumentiert statt gebaut: Crash zwischen Datei und DB-Zeile beim Text-Capture (zweite Notiz möglich), verlorenes `suggestion.created`-Event bei Crash zwischen Insert und Webhook. README-Altlast („Summary bleibt leer“) korrigiert. Whisper-Cache-Pfad gegen das Image geprüft (User `ubuntu`, `HOME=/home/ubuntu`, Port 8000).
+
 **WP6/7.** README aktualisiert (Setup mit Port 5544, S3/Whisper/Mail/Vorschläge, „Nicht gebaut“ bereinigt, Abschnitt „Vertagt / nicht machbar“ mit Grund und nächstem Schritt je Punkt). Dieses Journal zuletzt.
 
 ## Entscheidungen

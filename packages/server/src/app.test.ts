@@ -387,6 +387,7 @@ describe("resume gaps", () => {
     await finishNote(deps, note);
     expect(await repo.getNote(note.id)).toMatchObject({ status: "curated", summary: "Ein rotes Auto kaufen.", body: "Gedanke" });
     expect(queue.pending.map((j) => j.name)).toEqual(["embed"]);
+    expect(await repo.listSuggestions("pending")).toHaveLength(1); // proposals do not depend on the row sync that failed
   });
 
   it("finishNote resume of a curated file without a row rebuilds body + summary and enqueues embed", async () => {
