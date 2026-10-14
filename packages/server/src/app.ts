@@ -6,7 +6,7 @@ import { bodyLimit } from "hono/body-limit";
 import { cors } from "hono/cors";
 import type { Context, MiddlewareHandler } from "hono";
 import { ulid } from "ulid";
-import { CaptureAccepted, CaptureInput, DeviceCreate, DeviceCreated, MailCapture, Note, SearchResponse, Suggestion, SuggestionStatus, WebhookCreate } from "@pickynotes/shared";
+import { CaptureAccepted, CaptureInput, DeviceCreate, DeviceCreated, DeviceScope, MailCapture, Note, SearchResponse, Suggestion, SuggestionStatus, WebhookCreate } from "@pickynotes/shared";
 import { reindex } from "./indexer.js";
 import { isTailscaleOrAllowed } from "./net.js";
 import { BadCaptureError, Deps, PayloadTooLargeError, capture, captureMail, hybridSearch } from "./services.js";
@@ -75,7 +75,7 @@ const routes = {
   }),
   deviceList: createRoute({
     method: "get", path: "/admin/devices",
-    responses: { 200: res("Devices", z.object({ devices: z.array(z.object({ id: z.string(), name: z.string() })) })), 403: res("Forbidden", Err) },
+    responses: { 200: res("Devices", z.object({ devices: z.array(z.object({ id: z.string(), name: z.string(), scope: DeviceScope })) })), 403: res("Forbidden", Err) },
   }),
   webhookCreate: createRoute({
     method: "post", path: "/admin/webhooks", summary: "Register a webhook (note.created, note.curated, suggestion.created); HMAC-SHA256 in X-Picky-Signature.",
@@ -103,7 +103,10 @@ export function createApp(deps: AppDeps) {
 
   const auth: MiddlewareHandler = async (c, next) => {
     const token = /^Bearer (.+)$/.exec(c.req.header("authorization") ?? "")?.[1];
-    if (!token || !(await deps.repo.findDeviceByTokenHash(hashToken(token)))) return c.json({ error: "unauthorized" }, 401);
+    const device = token ? await deps.repo.findDeviceByTokenHash(hashToken(token)) : null;
+    if (!device) return c.json({ error: "unauthorized" }, 401);
+    // capture-only tokens (e.g. the mail forwarder) can submit but never read
+    if (device.scope === "capture" && !(c.req.method === "POST" && (c.req.path === "/captures" || c.req.path === "/captures/mail"))) return c.json({ error: "token scope is capture-only" }, 403);
     await next();
   };
   const admin: MiddlewareHandler = async (c, next) =>
@@ -154,11 +157,11 @@ export function createApp(deps: AppDeps) {
       return s ? c.json(s, 200) : c.json({ error: "not found" }, 404);
     });
   app.openapi(routes.deviceCreate, async (c) => {
-    const { name } = c.req.valid("json");
+    const { name, scope } = c.req.valid("json");
     const token = "pk_" + randomBytes(32).toString("base64url");
     const id = ulid();
-    await deps.repo.createDevice(id, name, hashToken(token));
-    return c.json({ id, name, token }, 201);
+    await deps.repo.createDevice(id, name, hashToken(token), scope);
+    return c.json({ id, name, scope, token }, 201);
   });
   app.openapi(routes.deviceList, async (c) => c.json({ devices: await deps.repo.listDevices() }, 200));
   app.openapi(routes.webhookCreate, async (c) => {

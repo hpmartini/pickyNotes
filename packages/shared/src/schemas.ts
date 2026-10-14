@@ -83,6 +83,7 @@ export const MailCapture = z.object({
 });
 export type MailCapture = z.infer<typeof MailCapture>;
 
-export const DeviceCreate = z.object({ name: z.string().min(1).max(100) });
-export const DeviceCreated = z.object({ id: z.string(), name: z.string(), token: z.string() });
+export const DeviceScope = z.enum(["full", "capture"]);
+export const DeviceCreate = z.object({ name: z.string().min(1).max(100), scope: DeviceScope.default("full") });
+export const DeviceCreated = z.object({ id: z.string(), name: z.string(), scope: DeviceScope, token: z.string() });
 export const WebhookCreate = z.object({ url: z.string().url(), secret: z.string().min(16).max(200) });

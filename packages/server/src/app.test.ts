@@ -657,6 +657,22 @@ describe("OpenAPI", () => {
   });
 });
 
+describe("capture-only device tokens", () => {
+  it("may submit captures and mail but nothing else", async () => {
+    const created = (await (await post("/admin/devices", { name: "mail", scope: "capture" }, "100.101.102.103")).json()) as { token: string; scope: string };
+    expect(created.scope).toBe("capture");
+    const as = (p: string, init: RequestInit = {}) => app.request(p, { ...init, headers: { authorization: `Bearer ${created.token}`, "content-type": "application/json" } }, env("203.0.113.5"));
+    expect((await as("/captures", { method: "POST", body: JSON.stringify({ kind: "text", source: "typed", text: "von der Mail" }) })).status).toBe(202);
+    expect((await as("/captures/mail", { method: "POST", body: JSON.stringify({ from: "a@example.com", text: "Hallo" }) })).status).toBe(202);
+    for (const p of ["/search?q=x", "/context?repo=x", "/suggestions", "/notes/abc"]) expect((await as(p)).status, p).toBe(403);
+    expect((await as("/suggestions/s1/accept", { method: "POST" })).status).toBe(403);
+    expect(((await (await call("/admin/devices", {}, "100.101.102.103")).json()) as { devices: { scope: string }[] }).devices.map((d) => d.scope).sort()).toEqual(["capture", "full"]);
+  });
+  it("defaults to a full token", async () => {
+    expect(((await (await post("/admin/devices", { name: "x" }, "100.101.102.103")).json()) as { scope: string }).scope).toBe("full");
+  });
+});
+
 describe("search reranking", () => {
   const ids = async () => {
     const a = (await (await post("/captures", { kind: "text", source: "typed", text: "Auto kaufen beim Händler" })).json()) as { id: string };

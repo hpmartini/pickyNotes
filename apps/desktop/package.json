@@ -8,7 +8,8 @@
     "build": "vite build",
     "tauri": "tauri",
     "typecheck": "tsc -p .",
-    "test": "vitest run"
+    "test": "vitest run",
+    "e2e": "playwright test"
   },
   "dependencies": {
     "@atomic-editor/editor": "^0.6.2",
@@ -30,6 +31,7 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.49.1",
     "@tauri-apps/cli": "^2.2.0",
     "@testing-library/dom": "^10.4.0",
     "@testing-library/react": "^16.2.0",

@@ -3,4 +3,6 @@ gate_timeout = 900
 gates = [
   ["npm", "run", "typecheck"],
   ["npm", "test"],
+  # real Chromium against the Vite dev server; needs `npx playwright install chromium` once
+  ["npm", "run", "e2e", "-w", "@pickynotes/desktop"],
 ]

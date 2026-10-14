@@ -73,7 +73,7 @@ Auftrag: Briefing vollständig umsetzen, Nicht-Machbares in README („Vertagt�
 | `docker compose config` / `build` / Start | ok / ok / Health + OpenAPI ok |
 
 ## Vertagt (Details und Schritte in der README)
-VPS-Deployment (kein Zugang), `claude -p`-Login im Container, echte WhisperStorm-API (Format unbekannt; angenommener Vertrag + openai-Alternative), echter Whisper-Lauf, Tauri-Build/App-Lauf, automatisierter Browser-Test des Editors (einmal manuell geprüft, siehe Nachtrag 2), Token-Scopes, Mobile/Share-Sheet/Push/Sortierdienst, Spec-Punkte 7a/7b/13b/17b (Spec nicht lesbar).
+VPS-Deployment (kein Zugang), `claude -p`-Login im Container, echte WhisperStorm-API (Format unbekannt; angenommener Vertrag + openai-Alternative), echter Whisper-Lauf, Bedienung des nativen Tauri-Fensters (Web-Teil per Playwright-Gate abgedeckt, siehe Nachtrag 3), Mobile/Share-Sheet/Push/Sortierdienst, Spec-Punkte 7a/7b/13b/17b (Spec nicht lesbar).
 
 ## Offene Punkte für dich
 1. Spec-Punkte 7a/7b/13b/17b nennen/abgleichen.
@@ -95,6 +95,13 @@ Der Einwand: Reranking, Browser-Prüfung und Re-Review des Sonnet-Fixes waren of
   4. `/captures`-Limit mit Object Store ca. 141 MB im Speicher (≈3× Spitze): VPS-Speicherlimit beachten.
   5. `.env.example` enthält `change-me-*` als S3-Zugang: vor `--profile s3` ändern.
 - Prozess-Fehler von mir: Fokus-, Entwurf- und Farb-Bugs wurden erst auf Zuruf behoben; die Lauf-1/2-Gates (Textarea-Mock) konnten sie nicht fangen. Seitdem echter Editor im Test und Browser-Check.
+
+## Nachtrag 3: zweiter Stop-Hook-Einwand
+Einwand: Playwright als Gate und Token-Scopes seien machbar und dürften nicht vertagt sein; Sortierdienst/Mobile nur Briefing-Umfang.
+- **Playwright-Gate gebaut** (`apps/desktop/e2e/editor.spec.ts`, `npm run e2e -w @pickynotes/desktop`, in `.orchestrate.toml`): echtes Chromium gegen Vite (Port 1421): zehn Zeichen einzeln getippt, Fokus bleibt; `- eins`/Enter/`zwei`/Enter/Tab/`eingerückt` ergibt drei Bullets und Draft `- eins\n- zwei\n  - eingerückt`; Schrift/Hintergrund-Kontrast; Entwurf nach Einstellungen→Erfassen erhalten. **Negativprobe:** ohne `documentId` in `CaptureView` schlägt der Test fehl, mit Fix grün.
+- **Token-Scopes gebaut:** Migration 005 (`devices.scope`), `POST /admin/devices {scope:"capture"}`; `capture`-Token darf nur `POST /captures` und `POST /captures/mail`, sonst 403. Tests (Memory + PG 91/91).
+- **Nicht machbar bleibt** (nur das): Bedienung des nativen Tauri-Fensters per Skript (Bildschirm gesperrt, keine Bedienungshilfen-/Apple-Events-Berechtigung; Hotkey/Schlüsselbund/Screenshot/Mikrofon nur dort erreichbar), VPS-Zugang, `claude -p`-Login im Container, WhisperStorm-Format. README trennt jetzt „Vertagt / nicht machbar“ von „Außerhalb des Briefing-Umfangs“ (Mobile, Share-Sheet, Push, Sortierdienst, GitHub/Gmail/Calendar/Todoist).
+- Stand: typecheck 4/4, Tests server 81 (+10 PG übersprungen), mit PG 91/91, cli 5, shared 2, desktop 17, e2e 1.
 
 ## Nachtrag: Typecheck-Gate
 Nach den Redelivery-Tests (`app.test.ts`) war `npm run typecheck` rot (TS2322): `expectUntouched` erwartete `() => Promise<Response>`, `post` liefert aber `Response | Promise<Response>` (Hono `app.request`). Fix: Parametertyp auf `() => Response | Promise<Response>` geweitet. Danach grün: typecheck (alle Workspaces), `npm test` (server 73 + 10 PG übersprungen, desktop 17, cli 5, shared 2), PG auf `picky_test` 83/83.

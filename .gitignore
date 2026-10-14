@@ -11,3 +11,6 @@ target/
 vault/
 !.env.example
 **/src-tauri/gen/
+test-results/
+playwright-report/
+.playwright-mcp/

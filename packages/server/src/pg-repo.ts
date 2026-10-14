@@ -112,15 +112,15 @@ export class PgRepo implements Repo {
     return r.rows.map((x) => x.id as string);
   }
 
-  async createDevice(id: string, name: string, tokenHash: string) {
-    await this.pool.query("INSERT INTO devices (id, name, token_hash) VALUES ($1,$2,$3)", [id, name, tokenHash]);
+  async createDevice(id: string, name: string, tokenHash: string, scope: Device["scope"] = "full") {
+    await this.pool.query("INSERT INTO devices (id, name, token_hash, scope) VALUES ($1,$2,$3,$4)", [id, name, tokenHash, scope]);
   }
   async findDeviceByTokenHash(hash: string): Promise<Device | null> {
-    const r = await this.pool.query("SELECT id, name FROM devices WHERE token_hash=$1", [hash]);
+    const r = await this.pool.query("SELECT id, name, scope FROM devices WHERE token_hash=$1", [hash]);
     return r.rows[0] ?? null;
   }
   async listDevices(): Promise<Device[]> {
-    return (await this.pool.query("SELECT id, name FROM devices ORDER BY created_at")).rows;
+    return (await this.pool.query("SELECT id, name, scope FROM devices ORDER BY created_at")).rows;
   }
 
   async addWebhook(w: Webhook) {

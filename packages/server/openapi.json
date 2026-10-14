@@ -1030,6 +1030,14 @@
                     "type": "string",
                     "minLength": 1,
                     "maxLength": 100
+                  },
+                  "scope": {
+                    "type": "string",
+                    "enum": [
+                      "full",
+                      "capture"
+                    ],
+                    "default": "full"
                   }
                 },
                 "required": [
@@ -1053,6 +1061,13 @@
                     "name": {
                       "type": "string"
                     },
+                    "scope": {
+                      "type": "string",
+                      "enum": [
+                        "full",
+                        "capture"
+                      ]
+                    },
                     "token": {
                       "type": "string"
                     }
@@ -1060,6 +1075,7 @@
                   "required": [
                     "id",
                     "name",
+                    "scope",
                     "token"
                   ]
                 }
@@ -1105,11 +1121,19 @@
                           },
                           "name": {
                             "type": "string"
+                          },
+                          "scope": {
+                            "type": "string",
+                            "enum": [
+                              "full",
+                              "capture"
+                            ]
                           }
                         },
                         "required": [
                           "id",
-                          "name"
+                          "name",
+                          "scope"
                         ]
                       }
                     }

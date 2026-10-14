@@ -73,15 +73,15 @@ export class MemoryRepo implements Repo {
     }, limit);
   }
 
-  async createDevice(id: string, name: string, hash: string) {
-    this.devices.set(id, { id, name, hash });
+  async createDevice(id: string, name: string, hash: string, scope: Device["scope"] = "full") {
+    this.devices.set(id, { id, name, scope, hash });
   }
   async findDeviceByTokenHash(hash: string) {
     const d = [...this.devices.values()].find((x) => x.hash === hash);
-    return d ? { id: d.id, name: d.name } : null;
+    return d ? { id: d.id, name: d.name, scope: d.scope } : null;
   }
   async listDevices() {
-    return [...this.devices.values()].map(({ id, name }) => ({ id, name }));
+    return [...this.devices.values()].map(({ id, name, scope }) => ({ id, name, scope }));
   }
 
   async addWebhook(w: Webhook) {

@@ -10,6 +10,8 @@ export type NoteUpsert = Omit<NoteRow, "createdAt"> & { createdAt?: string };
 export interface Device {
   id: string;
   name: string;
+  /** `capture` tokens may only POST /captures and /captures/mail. */
+  scope: "full" | "capture";
 }
 export interface Webhook {
   id: string;
@@ -44,7 +46,7 @@ export interface Repo {
   searchTrgm(q: string, limit: number): Promise<string[]>;
   searchVector(vec: number[], limit: number): Promise<string[]>;
 
-  createDevice(id: string, name: string, tokenHash: string): Promise<void>;
+  createDevice(id: string, name: string, tokenHash: string, scope?: Device["scope"]): Promise<void>;
   findDeviceByTokenHash(hash: string): Promise<Device | null>;
   listDevices(): Promise<Device[]>;
 
