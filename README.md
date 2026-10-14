@@ -72,7 +72,7 @@ docker compose --profile s3 --profile whisper up -d    # danach S3_ENDPOINT=http
 - Geräte-Token: `POST /admin/devices` von einem Tailscale-Peer. Token wird nur gehasht (SHA-256) gespeichert.
 - `POST /captures` ist pro IP rate-limitiert (`RATE_LIMIT_PER_MIN`).
 - CORS: nur `CORS_ORIGINS` (Default: Tauri-Webview + Vite-Dev); Preflights (`OPTIONS`) werden vor Auth beantwortet.
-- Das Image (`Dockerfile`) wurde gebaut und gestartet (Health ok); `claude -p` im Container braucht den Login oben.
+- Geprüft (lokal, eigener Compose-Projektname, Host-Ports 18788/19100/18000): `docker compose build`, Start mit `--profile s3 --profile whisper`, `/health` und `/openapi.json` ok, Gerätetoken, Mail-Notiz in den Vault, 17-MB-Datei landet im Bucket und als gekürzte Notiz mit `s3://`-Link im Vault. `claude -p` im Container braucht den Login oben (ohne Login bleibt die Kuratierung `pending`). Das Embedding-Modell wird beim ersten Suchen/Embedden geladen (Netz nötig, die erste Anfrage dauert).
 
 ## Betrieb
 
