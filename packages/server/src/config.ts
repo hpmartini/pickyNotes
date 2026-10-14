@@ -8,6 +8,8 @@ const Env = z.object({
   ADMIN_ALLOWLIST: z.string().default(""),
   /** Trust X-Forwarded-For (only behind a reverse proxy you control). */
   TRUST_PROXY: z.enum(["true", "false"]).default("false"),
+  /** Browser origins allowed to call the API (the desktop app's webview). */
+  CORS_ORIGINS: z.string().default("tauri://localhost,http://tauri.localhost,http://localhost:1420"),
   RATE_LIMIT_PER_MIN: z.coerce.number().default(30),
   CLAUDE_DAILY_LIMIT: z.coerce.number().default(200),
   MAX_ATTACHMENT_MB: z.coerce.number().default(10),
@@ -25,6 +27,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     port: e.PORT,
     adminAllowlist: e.ADMIN_ALLOWLIST.split(",").map((s) => s.trim()).filter(Boolean),
     trustProxy: e.TRUST_PROXY === "true",
+    corsOrigins: e.CORS_ORIGINS.split(",").map((s) => s.trim()).filter(Boolean),
     rateLimitPerMin: e.RATE_LIMIT_PER_MIN,
     claudeDailyLimit: e.CLAUDE_DAILY_LIMIT,
     maxAttachmentBytes: e.MAX_ATTACHMENT_MB * 1024 * 1024,

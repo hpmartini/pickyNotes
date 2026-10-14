@@ -33,7 +33,7 @@ beforeEach(async () => {
   webhookCalls = [];
   deps = {
     repo, vault: new Vault(root), llm, embedding: new FakeEmbedding(), transcription: new FakeTranscription("rotes Auto kaufen @claude plane den Kauf"),
-    queue, maxAttachmentBytes: 1000, adminAllowlist: [], trustProxy: false, rateLimitPerMin: 100,
+    queue, maxAttachmentBytes: 1000, adminAllowlist: [], trustProxy: false, corsOrigins: ["tauri://localhost", "http://localhost:1420"], rateLimitPerMin: 100,
     fetch: (async (url: string, init: RequestInit) => (webhookCalls.push({ url, init }), new Response("ok"))) as never,
   };
   app = createApp(deps);
@@ -61,6 +61,28 @@ describe("auth + admin", () => {
     const codes = [];
     for (let i = 0; i < 3; i++) codes.push((await post("/captures", { kind: "text", source: "typed", text: `n${i}` })).status);
     expect(codes).toEqual([202, 202, 429]);
+  });
+});
+
+describe("CORS", () => {
+  const preflight = (origin: string) =>
+    app.request("/captures", { method: "OPTIONS", headers: { origin, "access-control-request-method": "POST", "access-control-request-headers": "authorization,content-type" } }, env("1.1.1.1"));
+
+  it("answers preflights from allowed origins before auth", async () => {
+    for (const origin of ["tauri://localhost", "http://localhost:1420"]) {
+      const r = await preflight(origin);
+      expect(r.status).toBe(204);
+      expect(r.headers.get("access-control-allow-origin")).toBe(origin);
+      expect(r.headers.get("access-control-allow-headers")?.toLowerCase()).toContain("authorization");
+      expect(r.headers.get("access-control-allow-methods")).toContain("POST");
+    }
+  });
+  it("adds the headers to authorized responses; a disallowed origin gets none", async () => {
+    const ok = await call("/search?q=x", { headers: { origin: "tauri://localhost" } });
+    expect(ok.status).toBe(200);
+    expect(ok.headers.get("access-control-allow-origin")).toBe("tauri://localhost");
+    expect((await call("/search?q=x", { headers: { origin: "https://evil.example" } })).headers.get("access-control-allow-origin")).toBeNull();
+    expect((await preflight("https://evil.example")).headers.get("access-control-allow-origin")).toBeNull();
   });
 });
 

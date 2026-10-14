@@ -3,6 +3,7 @@ import { getConnInfo } from "@hono/node-server/conninfo";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { rateLimiter } from "hono-rate-limiter";
 import { bodyLimit } from "hono/body-limit";
+import { cors } from "hono/cors";
 import type { Context, MiddlewareHandler } from "hono";
 import { ulid } from "ulid";
 import { CaptureAccepted, CaptureInput, DeviceCreate, DeviceCreated, Note, SearchResponse, WebhookCreate } from "@pickynotes/shared";
@@ -13,6 +14,7 @@ import { BadCaptureError, Deps, PayloadTooLargeError, capture, hybridSearch } fr
 export interface AppDeps extends Deps {
   adminAllowlist: string[];
   trustProxy: boolean;
+  corsOrigins: string[];
   rateLimitPerMin: number;
 }
 
@@ -85,6 +87,9 @@ export function createApp(deps: AppDeps) {
   };
   const admin: MiddlewareHandler = async (c, next) =>
     isTailscaleOrAllowed(clientIp(c), deps.adminAllowlist) ? next() : c.json({ error: "admin only via Tailscale/allowlist" }, 403);
+
+  // First, so OPTIONS preflights (which carry no Authorization header) are answered before auth and rate limiting.
+  app.use("*", cors({ origin: deps.corsOrigins, allowHeaders: ["Authorization", "Content-Type"], allowMethods: ["GET", "POST", "OPTIONS"], maxAge: 600 }));
 
   // Rate limit before auth so token guessing is throttled too.
   app.use("/captures", rateLimiter({ windowMs: 60_000, limit: deps.rateLimitPerMin, keyGenerator: (c) => clientIp(c) ?? "unknown", standardHeaders: "draft-6" }));

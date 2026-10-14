@@ -52,6 +52,7 @@ docker compose exec -it server claude   # einmalig mit der Subscription einlogge
 - `/admin/*` antwortet nur Peers aus `100.64.0.0/10` (Tailscale) oder `ADMIN_ALLOWLIST`. Veröffentlichung auf der Tailscale-IP (`PUBLISH_ADDR`) oder hinter eigenem Proxy mit `TRUST_PROXY=true`. Admin-Sperre nach dem Deploy von außen testen.
 - Geräte-Token: `POST /admin/devices` von einem Tailscale-Peer. Token wird nur gehasht (SHA-256) gespeichert.
 - `POST /captures` ist pro IP rate-limitiert (`RATE_LIMIT_PER_MIN`).
+- CORS: nur `CORS_ORIGINS` (Default: Tauri-Webview + Vite-Dev); Preflights (`OPTIONS`) werden vor Auth beantwortet.
 - Das Image (`Dockerfile`) wurde gebaut und gestartet (Health ok); `claude -p` im Container braucht den Login oben.
 
 ## Betrieb
