@@ -1,0 +1,36 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: pickynotes
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d pickynotes"]
+      interval: 5s
+      retries: 10
+
+  server:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://postgres:${POSTGRES_PASSWORD}@db:5432/pickynotes
+      VAULT_PATH: /vault
+    ports:
+      # Bind to the VPS address that should be reachable. Admin routes only answer Tailscale/allowlisted peers.
+      - "${PUBLISH_ADDR:-127.0.0.1}:8787:8787"
+    volumes:
+      - ${VAULT_HOST_PATH:?set VAULT_HOST_PATH in .env}:/vault
+      - claude-auth:/home/node/.claude
+      - models:/app/node_modules/@huggingface/transformers/.cache
+
+volumes:
+  pgdata:
+  claude-auth:
+  models:

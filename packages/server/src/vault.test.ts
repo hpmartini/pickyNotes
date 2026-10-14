@@ -50,6 +50,15 @@ describe("Vault guardrails", () => {
     expect(await readFile(path.join(root, "raw/01C.md"), "utf8")).toContain("edited by sync");
   });
 
+  it("never executes ---js frontmatter and never scans attachments as notes", async () => {
+    await mkdir(path.join(root, "raw/attachments"), { recursive: true });
+    await writeFile(path.join(root, "x.md"), "---js\n(globalThis.__pwned = true, {})\n---\nbody");
+    await writeFile(path.join(root, "raw/attachments/evil.md"), "x");
+    await expect(vault.read("x.md")).rejects.toThrow("disabled");
+    expect((globalThis as Record<string, unknown>).__pwned).toBeUndefined();
+    expect((await vault.scan()).files).toEqual(["x.md"]);
+  });
+
   it("scan skips sync-conflict files and .obsidian, reports conflicts separately", async () => {
     await mkdir(path.join(root, "wiki_x"), { recursive: true });
     await mkdir(path.join(root, ".obsidian"));

@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
 import type { Repo } from "./repo.js";
 
 // ---------- LLM ----------
@@ -20,12 +21,13 @@ export class ClaudeCliProvider implements LlmProvider {
 
   complete({ prompt, system, filePath }: LlmRequest): Promise<string> {
     // Only the Read tool, and only when a file must be looked at: notes are untrusted input.
-    const args = ["-p", "--no-session-persistence", ...(system ? ["--append-system-prompt", system] : []), "--tools", filePath ? "Read" : ""];
+    // Read is limited to exactly that file (anything else is denied in -p mode) and the cwd holds no secrets.
+    const args = ["-p", "--no-session-persistence", ...(system ? ["--append-system-prompt", system] : []), ...(filePath ? ["--allowedTools", `Read(${filePath})`, "--tools", "Read"] : ["--tools", ""])];
     const env = { ...process.env };
     delete env.ANTHROPIC_API_KEY; // subscription only
     delete env.ANTHROPIC_AUTH_TOKEN;
     return new Promise((resolve, reject) => {
-      const p = spawn(this.bin, args, { env, stdio: ["pipe", "pipe", "pipe"], timeout: this.timeoutMs });
+      const p = spawn(this.bin, args, { env, cwd: tmpdir(), stdio: ["pipe", "pipe", "pipe"], timeout: this.timeoutMs });
       let out = "";
       let err = "";
       p.stdout.on("data", (d) => (out += d));
@@ -67,14 +69,19 @@ export class LocalEmbedding implements EmbeddingProvider {
   async embed(text: string, kind: "query" | "passage") {
     const mod = "@huggingface/transformers"; // variable: keeps the heavy optional dependency out of typecheck/tests
     this.pipe ??= import(mod).then((m) => m.pipeline("feature-extraction", "Xenova/multilingual-e5-small"));
-    const out = await (await this.pipe)(`${kind}: ${text.slice(0, 2000)}`, { pooling: "mean", normalize: true });
-    return Array.from(out.data);
+    try {
+      const out = await (await this.pipe)(`${kind}: ${text.slice(0, 2000)}`, { pooling: "mean", normalize: true });
+      return Array.from(out.data);
+    } catch (e) {
+      this.pipe = undefined; // don't cache a failed (e.g. interrupted) model download; the queue retries
+      throw e;
+    }
   }
 }
 
 /** Deterministic bag-of-words hashing embedding for tests; similar texts get similar vectors. */
 export class FakeEmbedding implements EmbeddingProvider {
-  async embed(text: string) {
+  async embed(text: string, _kind?: "query" | "passage") {
     const v = new Array<number>(EMBED_DIM).fill(0);
     for (const w of text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []) v[createHash("md5").update(w).digest().readUInt16BE(0) % EMBED_DIM]! += 1;
     const n = Math.hypot(...v) || 1;

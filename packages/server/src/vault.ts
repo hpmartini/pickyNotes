@@ -24,6 +24,12 @@ export interface CuratePatch {
   claudeBlock?: string;
 }
 
+const noCode = () => {
+  throw new Error("code frontmatter is disabled");
+};
+/** gray-matter evaluates `---js` frontmatter as code; vault files are untrusted input, so only YAML/JSON is allowed. */
+const parseNote = (raw: string) => matter(raw, { engines: { js: noCode, javascript: noCode, coffee: noCode, coffeescript: noCode, cson: noCode } });
+
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 const SKIP_DIRS = new Set([".obsidian", ".git", ".trash", "node_modules"]);
 
@@ -69,7 +75,7 @@ export class Vault {
 
   async read(rel: string): Promise<VaultFile> {
     const raw = await readFile(this.abs(rel), "utf8");
-    const m = matter(raw);
+    const m = parseNote(raw);
     return { path: rel, data: m.data, body: m.content, hash: sha(raw) };
   }
 
@@ -110,7 +116,7 @@ export class Vault {
     const target = this.abs(rel);
     const raw = await readFile(target, "utf8");
     if (sha(raw) !== expectedHash) throw new ConflictError(`${rel} changed since read`);
-    const m = matter(raw);
+    const m = parseNote(raw);
     let body = m.content;
     if (patch.summary !== undefined) body = replaceBlock(body, SUMMARY_START, SUMMARY_END, `> ${patch.summary.replace(/\n+/g, "\n> ")}`, "top");
     if (patch.claudeBlock !== undefined) body = replaceBlock(body, CLAUDE_START, CLAUDE_END, patch.claudeBlock, "bottom");
@@ -131,7 +137,7 @@ export class Vault {
       for (const e of await readdir(this.abs(dir), { withFileTypes: true })) {
         const rel = dir ? `${dir}/${e.name}` : e.name;
         if (e.isDirectory()) {
-          if (!SKIP_DIRS.has(e.name)) await walk(rel);
+          if (!SKIP_DIRS.has(e.name) && rel !== "raw/attachments") await walk(rel); // attachments are blobs, never notes
         } else if (e.name.endsWith(".md") || e.name.includes(".sync-conflict-")) {
           (e.name.includes(".sync-conflict-") ? conflicts : files).push(rel);
         }
