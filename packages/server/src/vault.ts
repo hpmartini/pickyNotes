@@ -50,6 +50,13 @@ export function stripPickyBlocks(body: string): string {
   return cut(cut(body, SUMMARY_START, SUMMARY_END), CLAUDE_START, CLAUDE_END).trim();
 }
 
+/** Text of the curator's summary block, or null. */
+export function readSummary(body: string): string | null {
+  const a = body.indexOf(SUMMARY_START);
+  const b = body.indexOf(SUMMARY_END);
+  return a !== -1 && b > a ? body.slice(a + SUMMARY_START.length, b).replace(/^\s*>\s?/gm, "").trim() : null;
+}
+
 function replaceBlock(body: string, start: string, end: string, inner: string, where: "top" | "bottom"): string {
   const block = `${start}\n${inner}\n${end}`;
   const s = body.indexOf(start);
@@ -108,7 +115,7 @@ export class Vault {
     const safe = path.basename(filename).replace(/[^\w.\-]+/g, "_").slice(-100) || "file";
     const rel = `raw/attachments/${id}-${safe}`;
     await mkdir(this.abs("raw/attachments"), { recursive: true });
-    const fh = await open(this.abs(rel), "wx");
+    const fh = await open(this.abs(rel), "w"); // <id>- prefix is unique per capture; a resumed capture rewrites its own (possibly truncated) file
     try {
       await fh.writeFile(bytes);
     } finally {

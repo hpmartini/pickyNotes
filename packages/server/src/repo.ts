@@ -17,7 +17,7 @@ export interface Webhook {
   secret: string;
 }
 /** Progress of one @claude instruction; a retry resumes after the last completed stage. */
-export type InstructionStage = "claimed" | "callout_written" | "executed" | "published";
+export type InstructionStage = "claimed" | "callout_written" | "executing" | "executed" | "published";
 export interface InstructionRow {
   id: string;
   noteId: string;
@@ -25,7 +25,7 @@ export interface InstructionRow {
   /** Status shown in the note's callout. */
   status: "pending" | "done" | "failed";
   stage: InstructionStage;
-  /** Model answer (or error text), stored at `executed` so a retry never calls the model again. */
+  /** Model answer (or error text), stored at `executed`; a retry never calls the model again (not even after `executing`). */
   result: string | null;
 }
 

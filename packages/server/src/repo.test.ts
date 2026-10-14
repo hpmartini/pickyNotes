@@ -53,6 +53,8 @@ function contract(name: string, make: () => Promise<Repo>, skip = false) {
 
     it("persists instruction stages and the stored result", async () => {
       await repo.claimInstruction({ id: "c_s", noteId: "s", hash: "S", status: "pending", stage: "claimed", result: null });
+      await repo.updateInstruction("c_s", { stage: "executing" });
+      expect(await repo.getInstructions("s")).toMatchObject([{ stage: "executing" }]);
       await repo.updateInstruction("c_s", { stage: "executed", status: "done", result: "Antwort" });
       expect(await repo.getInstructions("s")).toEqual([{ id: "c_s", noteId: "s", hash: "S", status: "done", stage: "executed", result: "Antwort" }]);
       await repo.updateInstruction("c_s", { stage: "published" });

@@ -94,8 +94,10 @@ export const handlers: Record<JobName, (deps: Deps, p: Payload) => Promise<void>
 
   /**
    * @claude: only text the user typed/dictated, each distinct instruction exactly once.
-   * Staged (claimed → callout_written → executed → published): a retry resumes after the last stage that completed,
+   * Staged (claimed → callout_written → executing → executed → published): a retry resumes after the last stage that completed,
    * so a missing callout is rewritten, the stored result is reused instead of calling the model again, and only publishing is retried.
+   * `executing` is persisted BEFORE the model call: finding it on entry means an earlier attempt may have called the model
+   * (outcome unknown), so the instruction is marked failed instead of calling the model a second time (at-most-once execution).
    * shortcut: two workers resuming the same stage at once could both call the model; the queue delivers one job per note, upgrade to a stage compare-and-set if that changes.
    */
   async "claude-instruction"(deps, p) {
@@ -117,7 +119,9 @@ export const handlers: Record<JobName, (deps: Deps, p: Payload) => Promise<void>
         await publish("pending");
         await advance({ stage: "callout_written" });
       }
+      if (row.stage === "executing") await advance({ stage: "executed", status: "failed", result: "Ausführung unterbrochen – nicht automatisch wiederholt" });
       if (row.stage === "callout_written") {
+        await advance({ stage: "executing" });
         let status: "done" | "failed" = "done";
         let result: string;
         try {
@@ -126,7 +130,16 @@ export const handlers: Record<JobName, (deps: Deps, p: Payload) => Promise<void>
           status = "failed";
           result = e instanceof Error ? e.message : String(e);
         }
-        await advance({ stage: "executed", status, result });
+        // Transient store errors must not lose the paid result; if all attempts fail the stage stays `executing` (see above).
+        for (let attempt = 1; ; attempt++) {
+          try {
+            await advance({ stage: "executed", status, result });
+            break;
+          } catch (e) {
+            if (attempt >= 3) throw e;
+            await new Promise((r) => setTimeout(r, 25 * attempt));
+          }
+        }
       }
       await publish(row.status, row.result ?? "");
       await advance({ stage: "published" });

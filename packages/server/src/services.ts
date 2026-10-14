@@ -1,10 +1,11 @@
+import { access } from "node:fs/promises";
 import { ulid } from "ulid";
 import type { CaptureInput, SearchHit, WebhookEvent } from "@pickynotes/shared";
 import { mentionsClaude } from "./claude-instructions.js";
 import type { EmbeddingProvider, LlmProvider, TranscriptionProvider } from "./providers.js";
 import type { NoteRow, Repo } from "./repo.js";
 import { rrf } from "./search.js";
-import type { Vault } from "./vault.js";
+import { readSummary, stripPickyBlocks, type Vault } from "./vault.js";
 
 export type JobName = "transcribe" | "extract" | "embed" | "curate" | "claude-instruction" | "webhook-deliver";
 export interface JobQueue {
@@ -46,18 +47,19 @@ export async function finishNote(deps: Deps, p: { id: string; body: string; sour
   const file = resumed ? await deps.vault.read(path) : null;
   const row = resumed ? await deps.repo.getNote(p.id) : null;
   const instructions = resumed ? await deps.repo.getInstructions(p.id) : [];
-  const curated = file?.data.status === "curated";
+  // Index fields come from the file on resume (the truth), so a curation that landed in the vault but not in the row is restored.
+  const body = file ? stripPickyBlocks(file.body) : p.body;
+  const status = file?.data.status === "curated" ? "curated" : file?.data.status === "failed" ? "failed" : "pending";
+  const curated = status === "curated";
   const indexed = !!row && row.body !== ""; // a capture's placeholder row (voice/file) has an empty body
-  if (!indexed) {
-    // shortcut: a curated summary is not restored here (stays null until the next reindex)
+  if (!indexed || (file && row && (row.status !== status || row.contentHash !== file.hash))) {
     const tags = Array.isArray(file?.data.tags) ? file.data.tags.map(String) : [];
-    const title = typeof file?.data.title === "string" ? file.data.title : (p.title ?? titleOf(p.body));
-    await deps.repo.upsertNote({ id: p.id, path, title, body: p.body, tags, summary: null, source: p.source, status: curated ? "curated" : "pending", contentHash: null, createdAt: p.createdAt, clientId: p.clientId });
+    const title = typeof file?.data.title === "string" ? file.data.title : (p.title ?? titleOf(body));
+    await deps.repo.upsertNote({ id: p.id, path, title, body, tags, summary: file ? readSummary(file.body) : null, source: p.source, status, contentHash: file?.hash ?? null, createdAt: p.createdAt, clientId: p.clientId });
   }
-  if (!curated) {
-    await deps.queue.send("embed", { noteId: p.id });
-    await deps.queue.send("curate", { noteId: p.id });
-  }
+  // shortcut: no hasEmbedding check, so a resume always re-embeds (idempotent); add one if embedding gets expensive.
+  await deps.queue.send("embed", { noteId: p.id });
+  if (!curated) await deps.queue.send("curate", { noteId: p.id });
   if (p.source !== "imported" && mentionsClaude(p.body) && (!instructions.length || instructions.some((i) => i.stage !== "published")))
     await deps.queue.send("claude-instruction", { noteId: p.id });
   if (!indexed) await emit(deps, "note.created", p.id, { path });
@@ -68,9 +70,11 @@ export async function capture(deps: Deps, input: CaptureInput): Promise<{ id: st
   // A retried capture (offline queue, lost response) resolves to the note it already created.
   // shortcut: two simultaneous first attempts can both pass this check; the unique index rejects the second (500) and the client's next retry resolves here.
   const dup = input.clientId ? await deps.repo.getNoteByClientId(input.clientId) : null;
-  if (dup) return { id: dup.id };
-  const id = ulid();
-  const createdAt = new Date().toISOString();
+  // A placeholder row (voice/file) without raw/<id>.md means the first attempt died before the pipeline job was queued: resume it.
+  const incomplete = !!dup && dup.body === "" && !(await access(deps.vault.absPath(dup.path)).then(() => true, () => false));
+  if (dup && !incomplete) return { id: dup.id };
+  const id = dup?.id ?? ulid();
+  const createdAt = dup?.createdAt ?? new Date().toISOString();
   if (input.kind === "text") {
     if (!input.text?.trim()) throw new BadCaptureError("text required");
     await finishNote(deps, { id, body: input.text, source: input.source, kind: "text", createdAt, clientId: input.clientId });
@@ -84,7 +88,7 @@ export async function capture(deps: Deps, input: CaptureInput): Promise<{ id: st
   const attachment = await deps.vault.writeAttachment(id, filename, bytes);
   const source = input.kind === "voice" ? input.source : "imported"; // OCR/PDF/file content never counts as own input
   const job = { noteId: id, attachment, filename, mime: input.mime ?? "application/octet-stream", source, kind: input.kind, caption: input.text ?? "", createdAt };
-  await deps.repo.upsertNote({ id, path: `raw/${id}.md`, title: filename, body: "", tags: [], summary: null, source, status: "pending", contentHash: null, createdAt, clientId: input.clientId });
+  if (!dup) await deps.repo.upsertNote({ id, path: `raw/${id}.md`, title: filename, body: "", tags: [], summary: null, source, status: "pending", contentHash: null, createdAt, clientId: input.clientId });
   await deps.queue.send(input.kind === "voice" ? "transcribe" : "extract", job);
   return { id };
 }

@@ -268,14 +268,95 @@ describe("idempotent captures + resumable finishNote", () => {
 
     await queue.drain(deps);
     expect((await repo.getNote(note.id))!.status).toBe("curated");
-    await finishNote(deps, note); // retry after everything finished
-    expect(sent()).toEqual([]);
+    await finishNote(deps, note); // retry after everything finished: only the idempotent embed is re-sent
+    expect(sent()).toEqual(["embed"]);
     expect((await repo.getNote(note.id))!.status).toBe("curated");
 
     repo.notes.delete(note.id); // crashed before indexing: row is rebuilt from the file, created is emitted
+    queue.pending = [];
     await finishNote(deps, note);
-    expect(sent()).toEqual(["webhook-deliver"]);
+    expect(sent()).toEqual(["embed", "webhook-deliver"]);
     expect(await repo.getNote(note.id)).toMatchObject({ status: "curated", title: "Auto kaufen", tags: ["auto", "kauf"] });
+  });
+});
+
+describe("resume gaps", () => {
+  const modelCalls = () => llm.calls.filter((c) => c.prompt.startsWith("Instruction:")).length;
+  const fileOf = (id: string) => readFile(path.join(root, `raw/${id}.md`), "utf8");
+  const captureClaude = async () => {
+    const { id } = (await (await post("/captures", { kind: "text", source: "typed", text: "Idee\n@claude erkläre das" })).json()) as { id: string };
+    queue.pending = [];
+    return id;
+  };
+  /** Makes updateInstruction fail for patches reaching `executed`: `times` attempts, then it works again. */
+  const failExecutedWrites = (times: number) => {
+    const real = repo.updateInstruction.bind(repo);
+    let left = times;
+    return vi.spyOn(repo, "updateInstruction").mockImplementation(async (id, patch) => {
+      if (patch.stage === "executed" && left-- > 0) throw new Error("db down");
+      return real(id, patch);
+    });
+  };
+
+  it("a transient failure persisting the result is retried in-process: one model call, original result published", async () => {
+    const id = await captureClaude();
+    failExecutedWrites(1);
+    await handlers["claude-instruction"](deps, { noteId: id });
+    await handlers["claude-instruction"](deps, { noteId: id });
+    expect(modelCalls()).toBe(1);
+    expect(await repo.getInstructions(id)).toMatchObject([{ stage: "published", status: "done", result: "Antwort auf Anweisung" }]);
+    expect(await fileOf(id)).toMatch(/> \[!claude\] id:c_\w+ status:done\n> Antwort auf Anweisung/);
+  });
+
+  it("if the result cannot be persisted at all, the retry does not call the model again and publishes an interrupted failure", async () => {
+    const id = await captureClaude();
+    const spy = failExecutedWrites(Infinity);
+    await expect(handlers["claude-instruction"](deps, { noteId: id })).rejects.toThrow("db down");
+    expect(await repo.getInstructions(id)).toMatchObject([{ stage: "executing" }]);
+    spy.mockRestore();
+    await handlers["claude-instruction"](deps, { noteId: id });
+    expect(modelCalls()).toBe(1);
+    expect(await repo.getInstructions(id)).toMatchObject([{ stage: "published", status: "failed" }]);
+    expect(await fileOf(id)).toMatch(/> \[!claude\] id:c_\w+ status:failed\n> Ausführung unterbrochen/);
+  });
+
+  it("a voice capture whose queue.send failed is resumed by the retry with the same clientId", async () => {
+    const body = { kind: "voice", source: "dictated", data: Buffer.from("a").toString("base64"), filename: "v.webm", clientId: "cid-resume" };
+    vi.spyOn(queue, "send").mockRejectedValueOnce(new Error("queue down"));
+    expect((await post("/captures", body)).status).toBeGreaterThanOrEqual(500);
+    expect(queue.pending).toEqual([]);
+    const retry = await post("/captures", body);
+    expect(retry.status).toBe(202);
+    const { id } = (await retry.json()) as { id: string };
+    expect([...repo.notes.keys()]).toEqual([id]);
+    await queue.drain(deps);
+    expect(queue.failures).toEqual([]);
+    expect(await fileOf(id)).toContain("rotes Auto kaufen");
+    expect((await repo.getNote(id))!.body).toContain("rotes Auto kaufen");
+  });
+
+  const note = { id: "01RESUME2", body: "Gedanke", source: "typed" as const, kind: "text", createdAt: "2026-01-01T00:00:00.000Z" };
+
+  it("finishNote resume restores a curation that reached the vault but not the row", async () => {
+    await finishNote(deps, note);
+    const upsert = vi.spyOn(repo, "upsertNote");
+    upsert.mockRejectedValueOnce(new Error("db down")); // syncRow of the curator
+    await expect(handlers.curate(deps, { noteId: note.id })).rejects.toThrow("db down");
+    expect((await repo.getNote(note.id))!.status).toBe("pending");
+    queue.pending = [];
+    await finishNote(deps, note);
+    expect(await repo.getNote(note.id)).toMatchObject({ status: "curated", summary: "Ein rotes Auto kaufen.", body: "Gedanke" });
+    expect(queue.pending.map((j) => j.name)).toEqual(["embed"]);
+  });
+
+  it("finishNote resume of a curated file without a row rebuilds body + summary and enqueues embed", async () => {
+    await finishNote(deps, note);
+    await handlers.curate(deps, { noteId: note.id });
+    repo.notes.delete(note.id);
+    queue.pending = [];
+    await finishNote(deps, note);
+    expect(await repo.getNote(note.id)).toMatchObject({ status: "curated", summary: "Ein rotes Auto kaufen.", body: "Gedanke" });
+    expect(queue.pending.map((j) => j.name)).toEqual(["embed"]);
   });
 });
 
