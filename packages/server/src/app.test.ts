@@ -205,6 +205,46 @@ describe("capture pipeline", () => {
     expect(existsSync(path.join(root, "raw/attachments"))).toBe(false);
   });
 
+  describe("inline image/PDF attachments get server-side extraction (extract-inline)", () => {
+    const data = Buffer.from("bytes").toString("base64");
+    const atts = [
+      { id: "p", name: "bild.png", mime: "image/png", data },
+      { id: "d", name: "dok.pdf", mime: "application/pdf", data },
+      { id: "t", name: "notiz.txt", mime: "text/plain", data },
+    ];
+    const text = "![bild](pending:p) [dok](pending:d) [notiz](pending:t)";
+    const markers = (note: string) => [...note.matchAll(/<!-- extract:([^ ]+) -->/g)].map((m) => m[1]!);
+
+    it("queues one job per image/PDF (not for text/plain); after drain the file and the row hold the extraction once per attachment", async () => {
+      const { id } = (await (await post("/captures", { kind: "text", source: "typed", text, attachments: atts })).json()) as { id: string };
+      expect(queue.pending.filter((j) => j.name === "extract-inline").map((j) => j.data.filename)).toEqual(["bild.png", "dok.pdf"]);
+      await queue.drain(deps);
+      expect(queue.failures).toEqual([]);
+      const note = await readFile(path.join(root, `raw/${id}.md`), "utf8");
+      expect(markers(note)).toEqual([`raw/attachments/${id}-${hid("p")}-bild.png`, `raw/attachments/${id}-${hid("d")}-dok.pdf`]);
+      expect(note.match(/Rechnung 42/g)).toHaveLength(2);
+      const row = (await repo.getNote(id))!;
+      expect(row.body.match(/Rechnung 42/g)).toHaveLength(2);
+      expect(row.body).toContain("![bild](raw/attachments/"); // user text intact
+    });
+
+    it("is idempotent: a retried capture (same clientId) and a re-run job add no second section", async () => {
+      const body = { kind: "text", source: "typed", text, clientId: "cid-inline", attachments: atts };
+      const { id } = (await (await post("/captures", body)).json()) as { id: string };
+      await queue.drain(deps);
+      expect((await (await post("/captures", body)).json()) as { id: string }).toEqual({ id });
+      await queue.drain(deps);
+      for (const j of [{ noteId: id, attachment: `raw/attachments/${id}-${hid("p")}-bild.png`, filename: "bild.png", mime: "image/png" }]) {
+        await queue.send("extract-inline", j);
+      }
+      await queue.drain(deps);
+      expect(queue.failures).toEqual([]);
+      const note = await readFile(path.join(root, `raw/${id}.md`), "utf8");
+      expect(markers(note)).toHaveLength(2);
+      expect(note.match(/Rechnung 42/g)).toHaveLength(2);
+    });
+  });
+
   it("text with attachments: unknown pending:<id> in the body is left as-is (no silent drop)", async () => {
     const data = Buffer.from("x").toString("base64");
     const { id } = (await (await post("/captures", {

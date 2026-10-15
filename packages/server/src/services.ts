@@ -9,7 +9,7 @@ import { rerankByLlm, rrf } from "./search.js";
 import type { ObjectStore } from "./object-store.js";
 import { readSummary, safeFilename, stripPickyBlocks, type Vault } from "./vault.js";
 
-export type JobName = "transcribe" | "extract" | "embed" | "curate" | "claude-instruction" | "webhook-deliver";
+export type JobName = "transcribe" | "extract" | "extract-inline" | "embed" | "curate" | "claude-instruction" | "webhook-deliver";
 export interface JobQueue {
   send(name: JobName, data: Record<string, unknown>): Promise<void>;
 }
@@ -89,8 +89,11 @@ export async function capture(deps: Deps, input: CaptureInput): Promise<{ id: st
   if (input.kind === "text") {
     if (!input.text?.trim()) throw new BadCaptureError("text required");
     // Store each inline attachment under raw/attachments/<id>-<attachmentId>-<safe>; rewrite `pending:<id>` in the body to the vault-relative path.
-    const body = await storeAttachmentsAndRewrite(deps, id, input.text, input.attachments);
+    const { body, stored } = await storeAttachmentsAndRewrite(deps, id, input.text, input.attachments);
     await finishNote(deps, { id, body, source: input.source, kind: "text", createdAt, clientId: input.clientId });
+    // OCR / PDF text for pasted images and documents; also on a retry (the job is idempotent). Other mime types stay plain links.
+    for (const a of stored.filter((s) => s.mime.startsWith("image/") || s.mime === "application/pdf"))
+      await deps.queue.send("extract-inline", { noteId: id, attachment: a.rel, filename: a.name, mime: a.mime });
     return { id };
   }
   if (!input.data) throw new BadCaptureError("data required");
@@ -116,18 +119,20 @@ export async function capture(deps: Deps, input: CaptureInput): Promise<{ id: st
  * to `raw/attachments/<noteId>-<sha256(attachmentId)[0:16]>-<safe-name>` (vault-relative). Unknown IDs are left as-is so a
  * truncated payload doesn't silently drop the user's references.
  */
-async function storeAttachmentsAndRewrite(deps: Deps, noteId: string, body: string, attachments?: { id: string; name: string; mime: string; data: string }[]): Promise<string> {
-  if (!attachments || attachments.length === 0) return body;
+async function storeAttachmentsAndRewrite(deps: Deps, noteId: string, body: string, attachments?: { id: string; name: string; mime: string; data: string }[]): Promise<{ body: string; stored: { rel: string; name: string; mime: string }[] }> {
+  if (!attachments || attachments.length === 0) return { body, stored: [] };
   if (new Set(attachments.map((a) => a.id)).size !== attachments.length) throw new BadCaptureError("duplicate attachment id");
   const paths = new Map<string, string>();
+  const stored: { rel: string; name: string; mime: string }[] = [];
   for (const a of attachments) {
     const bytes = Buffer.from(a.data, "base64");
     if (bytes.length > deps.maxAttachmentBytes) throw new PayloadTooLargeError(`attachment exceeds ${deps.maxAttachmentBytes} bytes`);
     // Same-named payloads (two screenshot.png) must not overwrite each other. The id is client input: a fixed-length hex digest is path-safe and keeps id and name unambiguous (no "-" or sanitizing collisions).
     const rel = await deps.vault.writeAttachment(`${noteId}-${createHash("sha256").update(a.id).digest("hex").slice(0, 16)}`, a.name, bytes);
     paths.set(a.id, rel);
+    stored.push({ rel, name: a.name, mime: a.mime });
   }
-  return body.replace(/pending:([a-zA-Z0-9_-]+)/g, (match, id: string) => paths.get(id) ?? match);
+  return { body: body.replace(/pending:([a-zA-Z0-9_-]+)/g, (match, id: string) => paths.get(id) ?? match), stored };
 }
 
 /** Forwarded mail → imported note. Sender in frontmatter and body (so /context?sender= finds it); messageId makes redelivery idempotent. */

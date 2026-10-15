@@ -28,6 +28,8 @@ export interface CuratePatch {
   summary?: string;
   /** Replaces the whole claude-callout block content. */
   claudeBlock?: string;
+  /** Appended to the end of the body (after a blank line). */
+  appendBody?: string;
 }
 
 const noCode = () => {
@@ -150,6 +152,7 @@ export class Vault {
       let body = m.content;
       if (patch.summary !== undefined) body = replaceBlock(body, SUMMARY_START, SUMMARY_END, `> ${patch.summary.replace(/\n+/g, "\n> ")}`, "top");
       if (patch.claudeBlock !== undefined) body = replaceBlock(body, CLAUDE_START, CLAUDE_END, patch.claudeBlock, "bottom");
+      if (patch.appendBody !== undefined) body = `${body.trimEnd()}\n\n${patch.appendBody}\n`;
       const out = serialize({ ...m.data, ...patch.frontmatter }, body);
       // shortcut: only in-process writers are locked; an external sync tool can still slip into the window below, upgrade to file locks if that happens
       if (sha(await readFile(target, "utf8")) !== expectedHash) throw new ConflictError(`${rel} changed during write`);

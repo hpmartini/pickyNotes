@@ -64,6 +64,22 @@ async function withLocalFile<T>(deps: Deps, p: Payload, fn: (absPath: string) =>
   }
 }
 
+/** Text of an attachment: read as-is for text files, otherwise extracted by the LLM (OCR / PDF / image description), capped like a text capture. */
+async function extractText(deps: Deps, p: Payload): Promise<string> {
+  const textual = p.mime.startsWith("text/") || /\.(md|txt)$/i.test(p.filename);
+  const extracted = textual
+    ? (await readAttachment(deps, p)).toString("utf8")
+    : await withLocalFile(deps, p, (filePath) =>
+        deps.llm.complete({
+          system: UNTRUSTED,
+          prompt: "Extract all readable text from the attached file as markdown. If it is an image without text, describe it in 2-3 sentences. Output only the markdown.",
+          filePath,
+        }),
+      );
+  // Same ceiling as a text capture: a note body is for reading/searching, the full file stays in the attachment.
+  return extracted.length > MAX_EXTRACT_CHARS ? `${extracted.slice(0, MAX_EXTRACT_CHARS)}\n\n… (gekürzt, Volltext im Anhang)` : extracted;
+}
+
 export const handlers: Record<JobName, (deps: Deps, p: Payload) => Promise<void>> = {
   async transcribe(deps, p) {
     const text = await deps.transcription.transcribe(await readAttachment(deps, p), p.filename, p.mime);
@@ -72,20 +88,22 @@ export const handlers: Record<JobName, (deps: Deps, p: Payload) => Promise<void>
   },
 
   async extract(deps, p) {
-    const textual = p.mime.startsWith("text/") || /\.(md|txt)$/i.test(p.filename);
-    const extracted = textual
-      ? (await readAttachment(deps, p)).toString("utf8")
-      : await withLocalFile(deps, p, (filePath) =>
-          deps.llm.complete({
-            system: UNTRUSTED,
-            prompt: "Extract all readable text from the attached file as markdown. If it is an image without text, describe it in 2-3 sentences. Output only the markdown.",
-            filePath,
-          }),
-        );
-    // Same ceiling as a text capture: a note body is for reading/searching, the full file stays in the attachment.
-    const text = extracted.length > MAX_EXTRACT_CHARS ? `${extracted.slice(0, MAX_EXTRACT_CHARS)}\n\n… (gekürzt, Volltext im Anhang)` : extracted;
+    const text = await extractText(deps, p);
     const body = `${p.caption ? p.caption + "\n\n" : ""}${text}\n\n${attachmentRef(deps, p)}`;
     await finishNote(deps, { id: p.noteId, body, source: "imported", kind: p.kind, title: titleOf(text, p.filename), createdAt: p.createdAt });
+  },
+
+  /** An image/PDF pasted into a text capture: append its extracted text to the note under a marker line (idempotent per attachment). */
+  async "extract-inline"(deps, p) {
+    const note = await deps.repo.getNote(p.noteId);
+    if (!note) return;
+    const marker = `<!-- extract:${p.attachment} -->`;
+    if ((await deps.vault.read(note.path)).body.includes(marker)) return;
+    const text = await extractText(deps, p);
+    // Re-checked inside the compare-before-write loop: a concurrent duplicate job must not append twice. The marker is not a picky block, so stripPickyBlocks keeps the text indexed.
+    const file = await patchNote(deps, note.path, (f) => (f.body.includes(marker) ? {} : { appendBody: `${marker}\n${text}` }));
+    await syncRow(deps, file);
+    await deps.queue.send("embed", { noteId: p.noteId });
   },
 
   async embed(deps, p) {
