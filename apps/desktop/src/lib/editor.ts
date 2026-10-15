@@ -509,7 +509,8 @@ class EmojiWidget extends WidgetType {
 
 /** Return true if the half-open range [from, to) is inside any code span/block. */
 function inCodeSpan(state: EditorState, from: number, to: number): boolean {
-  let n: ReturnType<ReturnType<typeof syntaxTree>["resolveInner"]> | null = syntaxTree(state).resolveInner(from, -1);
+  // side 1: a match at the very start of an indented code block (its node begins at `from`) is inside it too
+  let n: ReturnType<ReturnType<typeof syntaxTree>["resolveInner"]> | null = syntaxTree(state).resolveInner(from, 1);
   while (n) {
     if (n.name === "InlineCode" && n.from <= from && n.to >= to) return true;
     if (n.name === "FencedCode" || n.name === "CodeBlock") return true;
@@ -701,7 +702,7 @@ function attachmentsRenderDecos(view: EditorView): DecorationSet {
     if (text[m.index - 1] === "!") continue;
     const from = m.index;
     const to = from + m[0].length;
-    if (!inside(view.state, from, "FencedCode") && !inside(view.state, from, "CodeBlock")) {
+    if (!inCodeSpan(view.state, from, to)) {
       decos.push(Decoration.replace({ widget: new FileChipWidget(m[1] ?? "") }).range(from, to));
     }
   }

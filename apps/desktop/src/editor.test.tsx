@@ -431,3 +431,16 @@ describe("Fence typing", () => {
     expect(hasNode(view, "FencedCode")).toBe(true);
   });
 });
+
+describe("Pending-link file chip", () => {
+  const link = "[a.pdf](pending:abc-1)";
+  const chips = (src: string) => mount(src).dom.querySelectorAll(".cm-pn-file-chip").length;
+  it("replaces a plain pending link with a chip", () => {
+    expect(chips(`vor ${link}`)).toBe(1);
+  });
+  it("leaves the link as text inside fenced, indented and inline code", () => {
+    expect(chips("```\n" + link + "\n```")).toBe(0);
+    expect(chips("text\n\n    " + link)).toBe(0);
+    expect(chips("a `" + link + "` b")).toBe(0);
+  });
+});

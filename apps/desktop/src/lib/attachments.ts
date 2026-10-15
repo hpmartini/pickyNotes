@@ -56,11 +56,12 @@ export async function readAttachmentsForSend(text: string): Promise<{ id: string
   return (await all()).filter((a) => ids.has(a.id)).map((a) => ({ id: a.id, name: a.name, mime: a.mime, data: toBase64(a.bytes) }));
 }
 
-/** Called once the capture is safely queued/delivered: the queue item carries the bytes now. */
-export async function dropAttachments(text: string): Promise<void> {
+/** Called once the capture is safely queued/delivered: the queue item carries the bytes now. `keep` is the live draft: what it still references stays stashed. */
+export async function dropAttachments(text: string, keep = ""): Promise<void> {
   const d = await db();
   const store = d.transaction(STORE, "readwrite").objectStore(STORE);
-  for (const id of pendingIds(text)) store.delete(id);
+  const live = pendingIds(keep);
+  for (const id of pendingIds(text)) if (!live.has(id)) store.delete(id);
 }
 
 const toBase64 = (bytes: Uint8Array) => {

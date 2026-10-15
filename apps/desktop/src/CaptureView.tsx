@@ -96,7 +96,7 @@ export function CaptureView({ queue, send, screenshot }: Props) {
     // The user may keep typing while the send is pending; clear only if the editor still holds what was sent. A rejected draft stays.
     const attachments = await readAttachmentsForSend(sent);
     if (await submit({ kind: "text", source: "typed", text: sent, ...(attachments.length ? { attachments } : {}) })) {
-      await dropAttachments(sent);
+      await dropAttachments(sent, textRef.current === sent ? "" : textRef.current); // the user kept typing: links still in the live draft keep their bytes
       if (textRef.current === sent) {
         setText("");
         setDocId((n) => n + 1); // remount the editor empty; markdownSource is only read at mount

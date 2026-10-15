@@ -92,6 +92,24 @@ describe("CaptureView", () => {
     expect(await getAttachment(stray.id)).toBeDefined(); // never referenced: stays until the user links it
   });
 
+  it("after a save the stash keeps entries the live draft still links (the user kept typing during the send)", async () => {
+    const { stashAttachment, getAttachment } = await import("./lib/attachments");
+    const still = await stashAttachment({ name: "bleibt.pdf", mime: "application/pdf", bytes: new Uint8Array([1]) });
+    const gone = await stashAttachment({ name: "weg.pdf", mime: "application/pdf", bytes: new Uint8Array([2]) });
+    let finish!: () => void;
+    const send = vi.fn(() => new Promise<{ id: string }>((resolve) => (finish = () => resolve({ id: "1" }))));
+    render(<CaptureView queue={new CaptureQueue(`c${n++}`)} send={send} />);
+    const sent = `[bleibt.pdf](${still.markdownTarget}) [weg.pdf](${gone.markdownTarget})`;
+    fireEvent.change(screen.getByLabelText("Editor"), { target: { value: sent } });
+    fireEvent.click(screen.getByRole("button", { name: "Speichern" }));
+    await waitFor(() => expect(send).toHaveBeenCalled());
+    fireEvent.change(screen.getByLabelText("Editor"), { target: { value: `[bleibt.pdf](${still.markdownTarget}) weiter` } });
+    finish();
+    await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Gesendet"));
+    await waitFor(async () => expect(await getAttachment(gone.id)).toBeUndefined());
+    expect(await getAttachment(still.id)).toBeDefined();
+  });
+
   it("Sprache without a running WhisperStorm shows a clear message and does not switch to Stopp", async () => {
     render(<CaptureView queue={new CaptureQueue(`c${n++}`)} send={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Sprache" }));
