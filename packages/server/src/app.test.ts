@@ -186,6 +186,10 @@ describe("capture pipeline", () => {
       const files = (await readdir(path.join(root, "raw/attachments"))).filter((f) => f.startsWith(id));
       expect(files).toHaveLength(2);
       expect((await Promise.all(files.map((f) => readFile(path.join(root, "raw/attachments", f), "utf8")))).sort()).toEqual(["AAA", "BBB"]);
+      if (/^[\w-]+$/.test(first.id + second.id)) { // links were rewritten: two distinct targets, one per file
+        const note = await readFile(path.join(root, `raw/${id}.md`), "utf8");
+        for (const f of files) expect(note).toContain(`raw/attachments/${f}`);
+      }
     }
   });
 
