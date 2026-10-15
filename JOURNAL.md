@@ -253,3 +253,35 @@ Der alte Keymap-Eintrag `clearEmptyMarker(/^\s*(>\s*)+$/, "Blockquote")` für En
 **Nachtrag (Abschluss-Versuch VPS + natives Fenster):**
 - **Native App:** gebaut (`tauri build --bundles app`, 10 MiB) und nach `/Applications/pickyNotes.app` kopiert. Start ok: Fenster rendert (Tabs Erfassen/Suche/Einstellungen, Editor, Buttons Speichern/Sprache/Screenshot/Datei). Tippen per AppleScript scheiterte: Fokus lag nicht auf der App, Eingaben gingen vermutlich ins Finder-Fenster (Auswahl dort unverändert sichtbar, Dateinamen intakt; bitte kurz prüfen). Zeichenweise Editor-Prüfung bleibt deshalb auf Chromium/Playwright beschränkt.
 - **VPS:** Deployment nach Option 1 vorbereitet und vorgeprüft (Port 8791 frei, 95 GB Platz, 5,8 GB RAM frei, Docker Compose 5.0.2, `/srv/pickynotes` existiert nicht). Der Upload/Build auf dem Produktions-Host wurde vom Berechtigungssystem der Sitzung abgelehnt (Production Deploy) und nicht umgangen. Nichts auf dem VPS verändert. Ausführung: `! ssh VPS-hosti` bzw. Regel für `ssh VPS-hosti` freigeben, dann `git archive HEAD` → `/srv/pickynotes/app`, `.env` (VAULT_HOST_PATH=/srv/pickynotes/vault, SERVER_PORT=8791, PUBLISH_ADDR=127.0.0.1), `docker compose up -d --build`, einmaliger `claude`-Login im Container.
+
+## Zyklus 2 (Branch `md-features`): Editor-Abnahme gegen HEAD bbda0dc
+
+Mehrere Review-Funde waren veraltet (Rust-Command, CaptureView-Verdrahtung, Server-Rewrite samt Test, Toolbar, sub/sup und Emoji existierten schon). Gate-Basis war grün (typecheck, 64 Unit, 16 e2e). Gemessen statt angenommen:
+
+| Fund | Stand HEAD | Jetzt |
+|:--|:--|:--|
+| Speech/WhisperStorm | vorhanden (Rust `whisperstorm`, Swift-Socket) | `node scripts/whisperstorm-status.mjs` gegen die echte App: exit 0, `{"ok":true,"phase":"idle"}`; neu: `WHISPERSTORM_SOCKET`-Override + Fake-Socket-Test, e2e mit gemocktem Tauri-`invoke` (Transkript an Cursor, Fehlermeldung); WhisperStorm baut (xcodegen + xcodebuild Release, BUILD SUCCEEDED), Swift unverändert |
+| Text-Capture + Anhänge (Server) | vorhanden, Test 50/50 | unverändert |
+| Paste/Drop | Bild ok, PDF/Drop ohne Test | e2e PDF-Paste, Bild-Drop, Screenshot-/Datei-Button; Anhänge bekommen eine eigene Zeile, Buttons nutzen denselben Code (`insertAttachmentAt`) |
+| Task `- [` | **echt kaputt**: `- []`, keine Checkbox | Input-Regel, 5 Varianten + Link-Fall zeichenweise getestet |
+| Tabellen-Ausrichtung | **echt kaputt**: kein `text-align`, Atomic schrieb `---` zurück | Zellklassen/`text-align` aus der Trennzeile, Transaction-Filter stellt sie nach Zellbearbeitung wieder her |
+| Tabellen-Toolbar | **unsichtbar**: unter dem Editor von `overflow:hidden` abgeschnitten, nach Klick in eine Zelle weg | Leiste am unteren Rand, auch bei Zellfokus; Breite± beschriftet |
+| 4-Backtick-Fence | Auto-Close von Atomic setzte 3 Backticks, Block blieb offen | schließende Fence wächst mit; ArrowDown ab letzter Textzeile verlässt den Block (vorher: auf die versteckte Schlusszeile) |
+| `<sub>`/`<sup>` | blieb Quelltext | Tags verborgen, Inhalt tiefer/höher; `~x~`/`^x^` ohne Leerraum, Delimiter verborgen |
+
+**Zusätzlich beim Prüfen gefunden und behoben:** `^…^` überspannte Absätze (`[^1] … [^2]`), geordnete Listen verschachtelten mit Tab nicht (2 statt 3 Leerzeichen → Geschwister), Enter auf leerem verschachteltem `1. ` ließ ` 2. ` stehen, Tabelle von Hand tippen verlor Tasten ab gültiger Trennzeile. Das alte Features-e2e für Tabellen prüfte nur `includes("---")` und hatte das verdeckt.
+
+**Verhaltensänderungen:** (1) `[` direkt hinter einem Listenmarker wird zu `[ ] `; (2) Enter am Ende einer Pipe-Zeile außerhalb einer Tabelle baut Tabellengerüst; (3) ArrowDown verlässt einen Codeblock schon von der letzten Textzeile (editor.spec angepasst); (4) verschachtelte geordnete Ebene beginnt bei 1.; (5) Anhang-Links stehen in eigener Zeile.
+
+**Neu implementiert:** Fußnote (Ref hochgestellt, Definitionszeile), Definitionsliste, Heading-ID (gedimmt), Inline-HTML (`b strong i em u ins s del mark kbd sub sup`), Entities (`&nbsp;` …). e2e `markdownguide.spec.ts`: 25 Features, Draft + DOM-Klassen, Screenshot je Zeile (`apps/desktop/test-results/`, Sichtprüfung per Kontaktbogen: Überschriften, Listen, Zitat, Code, Links, Task, Tabelle, Paste/Drop, Sprache, Fence).
+
+**Vertagt / nicht gerendert (mit Grund):**
+- `<br>`, `<center>`, `<p align>`, `<img width>`, `<details>`: kein HTML-Renderer im Editor; ein `<br>`-Widget würde die CM-Cursornavigation brechen. Quelltext bleibt sichtbar und unverändert (getestet).
+- `<center>` am Zeilenanfang: Atomics Tag-Auto-Close setzt `</center>`; das Schließ-Tag von Hand zu tippen verdoppelt es (End-Taste statt tippen; Upstream-Verhalten, nicht angefasst).
+- Setext-Überschriften: bewusst aus (Vorgabe).
+- Tabellen: Spaltenzahl über Atomics eigenes Zellmenü ändern verliert die Ausrichtung (Filter greift nur bei gleicher Spaltenzahl); die eigene Leiste erhält sie. Breite = Dash-Anzahl, im Editor nur als `min-width` (GFM kennt keine Breite).
+- Aufgabenliste: Eintrag, der direkt nach `- [` mit `x` beginnt, wird als `[x]` gelesen; Tab/Shift-Tab in gemischten Listen (Aufzählung unter geordnet) rückt weiter um 2 ein.
+- Definitionsliste/Fußnote: nur Klassen/Widgets im Editor, keine Navigation Ref ↔ Definition; lezer liest `[^1]: Text` als Link-Referenz (CSS neutralisiert die Linkoptik).
+- Natives Tauri-Fenster weiter nicht visuell geprüft (Chromium/Playwright, nicht WebKit). Echte Transkript-Aufnahme nicht automatisiert (Mikrofon/GUI); belegt sind Protokoll (Fake-Socket), `status` gegen die echte App, Rust-Roundtrip-Test und die gemockte UI-Strecke.
+
+**Gates:** typecheck 0; Unit server 83 (+10 PG übersprungen) / cli 5 / shared 2 / desktop 85; e2e 55; `cargo test` 2; WhisperStorm baut.
