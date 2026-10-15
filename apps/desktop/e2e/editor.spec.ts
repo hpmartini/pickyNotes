@@ -58,41 +58,62 @@ test("character-by-character typing: no unexpected heading, no line-height jump,
         text: line.textContent ?? "",
         classes: [...line.classList],
         fontSize: parseFloat(getComputedStyle(line).fontSize),
+        fontFamily: getComputedStyle(line).fontFamily,
       }));
-      return { lines: data.map((d) => d.text), classes: data.map((d) => d.classes), styles: data.map((d) => d.fontSize), focus: document.activeElement instanceof Node && document.querySelector(".cm-content")!.contains(document.activeElement) };
+      return {
+        lines: data.map((d) => d.text),
+        classes: data.map((d) => d.classes),
+        styles: data.map((d) => d.fontSize),
+        fonts: data.map((d) => d.fontFamily),
+        focus: document.activeElement instanceof Node && document.querySelector(".cm-content")!.contains(document.activeElement),
+      };
     });
 
-  // Per-keystroke: focus + no plain-text line jumps up to a heading size. The Setext bug surfaces
-  // as a paragraph line silently getting cm-atomic-h* (and a bigger font), so we flag that directly
-  // instead of trying to keep every line on the paragraph baseline (fenced code, blockquote, etc.
-  // are allowed to be a different size — that's expected, not the bug).
-  const HEADING_SIZES = new Set<number>(); // populated lazily from the first heading we see
-  const assertSteady = (classes: string[], styles: number[], focus: boolean, label: string) => {
-    for (let i = 0; i < classes.length; i++) {
-      const c = classes[i]!;
-      const hasHeadingClass = c.some((x) => /^cm-atomic-h[1-6]$/.test(x));
-      if (hasHeadingClass) HEADING_SIZES.add(styles[i]!);
+  // Per-keystroke: a cm-atomic-h* class may only appear on the three ATX lines we typed (indices 0..2).
+  // The reported regression surfaces as a paragraph line silently gaining cm-atomic-h1/h2 (SetextHeading
+  // mapping), so flagging any unexpected heading-class line is the direct check. Non-heading, non-HR,
+  // non-code lines must keep the paragraph font size; code lines render in monospace and are skipped by
+  // font-family comparison.
+  let paragraphSize: number | undefined;
+  let paragraphFontFamily: string | undefined;
+  const assertSteady = (lines: string[], classes: string[][], styles: number[], fonts: string[], focus: boolean, label: string) => {
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i] === "Eine Zeile Text" && paragraphSize === undefined) {
+        paragraphSize = styles[i];
+        paragraphFontFamily = fonts[i];
+      }
     }
-    for (let i = 0; i < classes.length; i++) {
-      const c = classes[i]!;
-      if (c.some((x) => /^cm-atomic-h[1-6]$/.test(x))) continue; // headings: their own size
-      if (c.includes("cm-atomic-hr")) continue; // HR: any size is fine
-      // The Setext bug shows up as a non-heading, non-HR line at heading size.
-      if (HEADING_SIZES.has(styles[i]!)) {
-        // The only way a non-heading line can be at heading size without a heading class is the Setext regression.
-        expect.fail(`line ${i} (classes=${JSON.stringify(c)}, fontSize=${styles[i]}) sits at heading size but is not a heading at ${label}`);
+    for (let i = 0; i < lines.length; i++) {
+      const cls = classes[i]!;
+      if (cls.some((x) => /^cm-atomic-h[1-6]$/.test(x))) {
+        // shortcut: only the first three lines may be headings — they are the typed ATX headings; cheaper than re-deriving which line is which
+        const allowed = i < 3;
+        expect(allowed, `line ${i} (text=${JSON.stringify(lines[i])}) has a heading class but is not one of the typed ATX headings at ${label}`).toBe(true);
+        continue;
+      }
+      if (cls.includes("cm-atomic-hr")) continue;
+      if (paragraphFontFamily !== undefined && fonts[i] !== paragraphFontFamily) continue; // code: monospace
+      if (paragraphSize !== undefined && styles[i] !== paragraphSize) {
+        expect(styles[i], `line ${i} (text=${JSON.stringify(lines[i])}) has fontSize ${styles[i]} but paragraph is ${paragraphSize} at ${label}`).toBe(paragraphSize);
       }
     }
     expect(focus, `focus should stay in the editor at ${label}`).toBe(true);
   };
 
   const step = async (key: string | { type: string; key: string; shiftKey?: boolean }, label: string) => {
-    if (typeof key === "string") await page.keyboard.type(key, { delay: 5 });
-    else if (key.type === "press") await page.keyboard.press(key.key);
+    if (typeof key === "string") {
+      for (const ch of key) {
+        await page.keyboard.type(ch);
+        const probe = await inspect();
+        assertSteady(probe.lines, probe.classes, probe.styles, probe.fonts, probe.focus, label);
+      }
+      return;
+    }
+    if (key.type === "press") await page.keyboard.press(key.shiftKey ? `Shift+${key.key}` : key.key);
     else if (key.type === "down") await page.keyboard.down(key.key);
     else if (key.type === "up") await page.keyboard.up(key.key);
     const probe = await inspect();
-    assertSteady(probe.classes, probe.styles, probe.focus, label);
+    assertSteady(probe.lines, probe.classes, probe.styles, probe.fonts, probe.focus, label);
   };
 
   // ---- ATX headings ----
@@ -115,7 +136,7 @@ test("character-by-character typing: no unexpected heading, no line-height jump,
   await step({ type: "press", key: "Enter" }, "Enter after HR");
   await step({ type: "press", key: "Enter" }, "blank line");
 
-  // ---- bullet list ----
+  // ---- bullet list: Tab indents, Shift-Tab outdents ----
   await step("- eins", "bullet item");
   await step({ type: "press", key: "Enter" }, "Enter continues bullet");
   await step("zwei", "second bullet text");
@@ -123,8 +144,21 @@ test("character-by-character typing: no unexpected heading, no line-height jump,
   await step({ type: "press", key: "Tab" }, "Tab indents");
   await step("eingerückt", "nested bullet text");
   await step({ type: "press", key: "Enter" }, "Enter on nested");
+  const beforeShiftTab = await page.evaluate(() => localStorage.getItem("picky.draft") ?? "");
   await step({ type: "press", key: "Tab", shiftKey: true }, "Shift-Tab outdents");
+  const afterShiftTab = await page.evaluate(() => localStorage.getItem("picky.draft") ?? "");
+  const beforeLast = beforeShiftTab.split("\n").pop() ?? "";
+  const afterLast = afterShiftTab.split("\n").pop() ?? "";
+  expect(afterLast.startsWith("  "), `Shift+Tab should outdent; last line went from ${JSON.stringify(beforeLast)} to ${JSON.stringify(afterLast)}`).toBe(false);
+  expect(afterLast.startsWith("- "), `after Shift+Tab the last line should be a top-level bullet, got ${JSON.stringify(afterLast)}`).toBe(true);
   await step({ type: "press", key: "Enter" }, "Enter exits list");
+
+  // ---- bullet list: Backspace on an empty "- " item exits the bullet ----
+  await step("- ", "empty bullet item");
+  await step({ type: "press", key: "Backspace" }, "Backspace exits empty bullet");
+  const probeAfterBs = await inspect();
+  const lastLineAfterBs = probeAfterBs.lines[probeAfterBs.lines.length - 1] ?? "";
+  expect(lastLineAfterBs.includes("•"), `Backspace on empty bullet should drop the bullet; last line is ${JSON.stringify(lastLineAfterBs)}`).toBe(false);
 
   // ---- ordered list ----
   await step("1. eins", "ordered item");
