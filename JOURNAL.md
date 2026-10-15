@@ -213,6 +213,43 @@ Der alte Keymap-Eintrag `clearEmptyMarker(/^\s*(>\s*)+$/, "Blockquote")` für En
 - VPS-Deployment: technisch umsetzbar, aber Briefing-Guardrail verlangt Nutzerentscheidung (Option 1 isolierter Compose-Stack unter `/srv/pickynotes/vault`, 127.0.0.1 — empfohlen; 2 eigener Pfad + Tailscale; 3 vertagen). VPS nur lesend untersucht, nichts verändert. Vertagt bis zur Entscheidung.
 - `git push` nur auf ausdrückliches Ja.
 
+**Runde 3 — Editor-Features, Anhänge, Sprache:**
+
+**WP1 Editor (`apps/desktop/src/lib/editor.ts`).**
+- Fence hiding: öffnende und schließende ```-Zeile (auch 4+ Backticks) bekommen `cm-pn-fence-hidden`, solange Cursor außerhalb (`head < to`, also `head == to` zählt als nach dem Block). Decoration auf Prec.highest, damit Atomic's eigenes Rendering überschrieben wird.
+- ArrowDown/Auf am Blockrand verlässt den Block (Prec.high keydown-Handler), ArrowDown am Dokumentende fügt eine neue Zeile nach dem Block ein.
+- Tabellen-Toolbar: ViewPlugin erscheint, sobald der Cursor in einer `Table`-Node sitzt, mit Buttons ⊕/⊖ Zeile, ⊕/⊖ Spalte, ⇤L/⇔C/⇥R (Alignment als `:--`/`:-:`/`--:`), ◀/▶ (Spaltenbreite als Dash-Anzahl). Schreibt die Quellzeilen direkt, weil Atomic's `serializeTable` jede Zelle auf `---` normalisiert; eigener `readDelimiter`/`formatDelimiter` hält Alignment + Dash-Count durch Schreibvorgänge.
+- Sub/Sup: Decoration Mark-Decoration für `~x~` (single tilde, lookbehind rejectet `~~`) und `^x^`. Lezer-Markdown liefert schon `Subscript`/`Superscript`-Knoten, aber ohne CSS-Klasse — die Decoration bringt `cm-pn-sub`/`cm-pn-sup` ins DOM.
+- Emoji defect fixes: InlineCode/FencedCode/CodeBlock übersprungen, `\:joy:` (Backslash-Escape) übersprungen, Selektion *innerhalb* des Shortcodes lässt die Quelle sichtbar (kein Widget), unbekannte Namen bleiben als plain text. `:grin:` → 😁. `selTouches` prüft `head >= from && head < to`, damit Cursor am Ende nicht „innerhalb" ist.
+- Pending-Attachments-Decoration: `![…](pending:<id>)` und `[…](pending:<id>)` rendert als Chip/Vorschau bis der Server die Links ersetzt.
+- ATOMIC_CODE_LANGUAGES an den duplizierten Parser durchgereicht, damit Fenced Code Highlighting bekommt.
+- Unit: `H~2~O` → `cm-pn-sub`, `x^2^` → `cm-pn-sup`, Fence hide bei 3- und 4-Backtick, Emoji-Code/Fence/Escape/Selektion/`:grin:`, Tabellen-Alignment-Survival.
+
+**WP2 Anhänge.**
+- `packages/shared/src/schemas.ts`: `CaptureAttachment = {id,name,mime,data}` und `CaptureInput.attachments?` (max 20).
+- `packages/server/src/services.ts`: Text-Branch speichert jede Attachment via `vault.writeAttachment(noteId, name, bytes)` und schreibt `pending:<id>` im Body zu `raw/attachments/<noteId>-<safe>` (unbekannte IDs bleiben pending — Retry-fest). `openapi.json` regeneriert.
+- `apps/desktop/src/lib/attachments.ts`: IndexedDB `pickynotes-attachments` für die Bytes. `stashAttachment` schreibt, `readAttachmentsForSend` liest beim Flush. IDs in Crypto-Random.
+- `apps/desktop/src/lib/editor.ts`: `paste`/`drop` `domEventHandler` (Prec.highest) liest `clipboardData.files`/`dataTransfer.files`, stasht und fügt `![…](pending:<id>)` (Bild) oder `[…](pending:<id>)` (Datei) an der Position ein.
+- `apps/desktop/src/CaptureView.tsx`: Screenshot- und Datei-Button gehen über denselben Pfad (Inline-Insert, nicht Standalone-Capture). `sendText` hängt `attachments` aus `readAttachmentsForSend()` an.
+- Server-Tests: `text with attachments: stores each attachment and rewrites pending:<id>` + `unknown pending:<id> left as-is`.
+
+**WP3 Sprache (WhisperStorm + Rust + TS).**
+- `~/PROJECTS/WhisperStorm/Sources/App/ControlSocketServer.swift` (neu): AF_UNIX auf `~/Library/Application Support/WhisperStorm/control.sock`, chmod 0600, stale socket wird beim Start unlinked. Protokoll: `{"cmd":"start"|"stop"|"status"}\n` → `{"ok","phase","text"?,"error"?}\n`. Hop auf `@MainActor` und durch `DictationCoordinator`.
+- `DictationCoordinator` bekommt `enum DeliveryMode {.hotkey, .socket}`; im Socket-Modus wird `TextInserter.insert` übersprungen, damit das Transkript nicht doppelt landet. Nach jedem Request zurück auf `.hotkey`, damit der Hotkey-Pfad weiter klebt. AppDelegate startet/stoppt den Server (start bei `applicationDidFinishLaunching`, stop bei `applicationWillTerminate`).
+- `apps/desktop/src-tauri/src/lib.rs`: `whisperstorm(cmd)` mit `std::os::unix::net::UnixStream`, Read-/Write-Timeouts (5 s Request, 120 s für `stop`), camelCase-Reply-Struct. Bei `ConnectionRefused` oder fehlendem Socket: `{ok:false, error:"WhisperStorm läuft nicht"}`. `serde`/`serde_json` ergänzt.
+- `cargo test --lib`: `whisperstorm_sends_and_receives_json` (per-line Handshake gegen einen temporären UnixListener) und `whisperstorm_handles_missing_socket`.
+- `apps/desktop/src/lib/tauri.ts`: `whisperstorm(cmd)`-Wrapper; im Browser fallback → `WhisperStorm läuft nicht`.
+- `apps/desktop/src/CaptureView.tsx`: Sprache-Button sendet `start`/`stop`, fügt das Transkript an der Cursorposition ein (via `editorHandleRef` → `EditorView.findFromDOM` → `insertTextAtCursor`).
+- `scripts/whisperstorm-status.mjs`: öffnet Socket, sendet `status`, antwortet mit JSON-Zeile, exit 0 nur bei `ok:true`. Startet die App, falls Socket fehlt.
+
+**WP4 e2e.**
+- `apps/desktop/e2e/features.spec.ts` (neu): pro Feature eine Spec mit Zeichen-für-Zeichen-Tippen und Screenshot pro Schritt. Coverage: sub/sup, fence hiding (3+4 Backticks), `:rocket:` (Draft + DOM), Task-Checkbox Toggle (Draft `[ ]` ↔ `[x]`), Tabelle-Toolbar (Center Alignment), Paste-Image.
+
+**Vertagt (mit Grund):**
+- Natives Fenster visuell ungeprüft (Bildschirm gesperrt; alle e2e liefen in Chromium, nicht WebKit). Brief wie in Runde 2.
+- WhisperStorm-Socket-Status-Gate (`scripts/whisperstorm-status.mjs`) braucht eine signierte Build und eine GUI-Session zum App-Start; lokal ok, automatisierter Run bleibt manuell.
+- WebKit-Layout/Smoke bleibt; Coverage der bestehenden Layout-Tests reicht für Chromium.
+
 **Nachtrag (Abschluss-Versuch VPS + natives Fenster):**
 - **Native App:** gebaut (`tauri build --bundles app`, 10 MiB) und nach `/Applications/pickyNotes.app` kopiert. Start ok: Fenster rendert (Tabs Erfassen/Suche/Einstellungen, Editor, Buttons Speichern/Sprache/Screenshot/Datei). Tippen per AppleScript scheiterte: Fokus lag nicht auf der App, Eingaben gingen vermutlich ins Finder-Fenster (Auswahl dort unverändert sichtbar, Dateinamen intakt; bitte kurz prüfen). Zeichenweise Editor-Prüfung bleibt deshalb auf Chromium/Playwright beschränkt.
 - **VPS:** Deployment nach Option 1 vorbereitet und vorgeprüft (Port 8791 frei, 95 GB Platz, 5,8 GB RAM frei, Docker Compose 5.0.2, `/srv/pickynotes` existiert nicht). Der Upload/Build auf dem Produktions-Host wurde vom Berechtigungssystem der Sitzung abgelehnt (Production Deploy) und nicht umgangen. Nichts auf dem VPS verändert. Ausführung: `! ssh VPS-hosti` bzw. Regel für `ssh VPS-hosti` freigeben, dann `git archive HEAD` → `/srv/pickynotes/app`, `.env` (VAULT_HOST_PATH=/srv/pickynotes/vault, SERVER_PORT=8791, PUBLISH_ADDR=127.0.0.1), `docker compose up -d --build`, einmaliger `claude`-Login im Container.
