@@ -333,6 +333,13 @@ describe("Table source preserves alignment on re-parse", () => {
     view.dispatch({ changes: { from: 0, to: src.length, insert: "| a | b |\n| --- | --- |\n| 1Z | 2 |" } });
     expect(doc(view)).toBe("| a | b |\n| :--- | ---: |\n| 1Z | 2 |");
   });
+  it("toolbar width/alignment changes are not reverted by the alignment keeper (Breite − back to `---`)", () => {
+    const view = mount("| a | b |\n| ----- | ----- |\n| 1 | 2 |");
+    view.dispatch({ selection: { anchor: 2 } });
+    const bar = view.dom.parentElement!.querySelector<HTMLElement>(".cm-pn-table-toolbar")!;
+    bar.querySelector<HTMLElement>('button[title="Spaltenbreite verkleinern"]')!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    expect(doc(view)).toBe("| a | b |\n| --- | --- |\n| 1 | 2 |");
+  });
   it("does not invent alignment when the column count changed", () => {
     const src = "| a | b |\n| :--- | ---: |\n| 1 | 2 |";
     const view = mount(src);

@@ -276,7 +276,8 @@ Mehrere Review-Funde waren veraltet (Rust-Command, CaptureView-Verdrahtung, Serv
 **Neu implementiert:** Fußnote (Ref hochgestellt, Definitionszeile), Definitionsliste, Heading-ID (gedimmt), Inline-HTML (`b strong i em u ins s del mark kbd sub sup`), Entities (`&nbsp;` …). e2e `markdownguide.spec.ts`: 25 Features, Draft + DOM-Klassen, Screenshot je Zeile (`apps/desktop/test-results/`, Sichtprüfung per Kontaktbogen: Überschriften, Listen, Zitat, Code, Links, Task, Tabelle, Paste/Drop, Sprache, Fence).
 
 **Vertagt / nicht gerendert (mit Grund):**
-- `<br>`, `<center>`, `<p align>`, `<img width>`, `<details>`: kein HTML-Renderer im Editor; ein `<br>`-Widget würde die CM-Cursornavigation brechen. Quelltext bleibt sichtbar und unverändert (getestet).
+- `<br>`, `<center>`, `<p align>`, `<img width>`, `<details>`, Farbe (`<font color>`, `<p style>`), Bildunterschrift (`<figure>`), Link-Ziel (`<a target>`), HTML in Tabellenzellen, Inhaltsverzeichnis: kein HTML-Renderer im Editor; ein `<br>`-Widget würde die CM-Cursornavigation brechen. Quelltext bleibt sichtbar und unverändert (`<center>`/`<br>` getestet). Admonitions und `[![img](…)](url)` rendert Atomic nativ.
+- Tabellen-Ausrichtung: Wer die Trennzeile einer ausgerichteten Tabelle von Hand markiert und durch `| --- | --- |` ersetzt, bekommt die alte zurück (der Filter erkennt nur Toolbar-Schreibvorgänge per Annotation, nicht Absicht).
 - `<center>` am Zeilenanfang: Atomics Tag-Auto-Close setzt `</center>`; das Schließ-Tag von Hand zu tippen verdoppelt es (End-Taste statt tippen; Upstream-Verhalten, nicht angefasst).
 - Setext-Überschriften: bewusst aus (Vorgabe).
 - Tabellen: Spaltenzahl über Atomics eigenes Zellmenü ändern verliert die Ausrichtung (Filter greift nur bei gleicher Spaltenzahl); die eigene Leiste erhält sie. Breite = Dash-Anzahl, im Editor nur als `min-width` (GFM kennt keine Breite).

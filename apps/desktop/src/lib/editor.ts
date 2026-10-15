@@ -237,8 +237,9 @@ function tablePos(view: EditorView): number {
 const isDelimiterRow = (s: string | undefined): s is string => !!s && /^\s*\|?(\s*:?-+:?\s*\|)+(\s*:?-+:?\s*)?$/.test(s);
 
 // Atomic's serializeTable rewrites every delimiter row to `| --- | --- |` on a cell edit; put the old row (alignment + width) back when the column count is unchanged.
+const ownTableEdit = Annotation.define<boolean>(); // toolbar writes (e.g. "Breite −" back to `---`) must not be mistaken for Atomic's flattening
 const keepTableAlignment = EditorState.transactionFilter.of((tr) => {
-  if (!tr.docChanged) return tr;
+  if (!tr.docChanged || tr.annotation(ownTableEdit)) return tr;
   const fixes: { from: number; to: number; insert: string }[] = [];
   tr.changes.iterChanges((fromA, toA, fromB, toB) => {
     const before = tr.startState.doc.sliceString(fromA, toA).split("\n");
@@ -292,7 +293,7 @@ function applyDelimiterChange(view: EditorView, change: (spec: Array<{ align: "L
   while (newSpec.length < header.length) newSpec.push({ align: "none", dashes: 3 });
   if (newSpec.length > header.length) newSpec.length = header.length;
   const newText = [t.lines[0]!, formatDelimiter(newSpec), ...t.lines.slice(2)].join("\n");
-  view.dispatch({ changes: { from: t.from, to: t.to, insert: newText }, selection: { anchor: t.from } });
+  view.dispatch({ changes: { from: t.from, to: t.to, insert: newText }, selection: { anchor: t.from }, annotations: ownTableEdit.of(true) });
   view.focus();
 }
 
