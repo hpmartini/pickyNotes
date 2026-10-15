@@ -123,6 +123,18 @@ describe("CaptureView", () => {
     expect(screen.queryByRole("button", { name: "Stopp" })).toBeNull();
   });
 
+  it("Sprache shows a pending state and disables the button while start is running", async () => {
+    let reply!: (r: unknown) => void;
+    ws.replies.push(new Promise((res) => (reply = res)) as never);
+    render(<CaptureView queue={new CaptureQueue(`c${n++}`)} send={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Sprache" }));
+    await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Starte Aufnahme…"));
+    expect((screen.getByRole("button", { name: "Sprache" }) as HTMLButtonElement).disabled).toBe(true);
+    reply({ ok: true, phase: "recording" });
+    expect(await screen.findByRole("button", { name: "Stopp" })).toBeTruthy();
+    expect(screen.getByRole("status").textContent).toBe("");
+  });
+
   it.each([
     ["empty", "", "Kein Text erkannt – nichts eingefügt."],
     ["whitespace-only", " \n ", "Kein Text erkannt – nichts eingefügt."],

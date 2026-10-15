@@ -70,9 +70,18 @@ async fn whisperstorm(cmd: String) -> Result<WhisperReply, String> {
         .map_err(|e| e.to_string())?
 }
 
+/// Client read deadline per command. `start` must outlast WhisperStorm's own 30 s start wait (ControlSocketServer.swift) plus margin.
+fn read_timeout(cmd: &str) -> Duration {
+    Duration::from_secs(match cmd {
+        "stop" => 120,
+        "start" => 40,
+        _ => 5,
+    })
+}
+
 /// The socket exchange behind the command, with the path as a parameter so tests can use a fake listener.
 fn whisperstorm_at(path: &Path, cmd: &str) -> Result<WhisperReply, String> {
-    let timeout = if cmd == "stop" { Duration::from_secs(120) } else { Duration::from_secs(5) };
+    let timeout = read_timeout(cmd);
     let mut stream = match UnixStream::connect(path) {
         Ok(s) => s,
         Err(_) => return Ok(WhisperReply { ok: false, phase: None, text: None, error: Some("WhisperStorm läuft nicht".to_string()) }),
@@ -135,6 +144,13 @@ mod tests {
             writeln!(s, "{reply}").unwrap();
             line
         })
+    }
+
+    #[test]
+    fn start_deadline_outlasts_the_30s_swift_start_wait() {
+        assert!(read_timeout("start") > Duration::from_secs(30));
+        assert!(read_timeout("stop") > read_timeout("start"));
+        assert_eq!(read_timeout("status"), Duration::from_secs(5));
     }
 
     #[test]

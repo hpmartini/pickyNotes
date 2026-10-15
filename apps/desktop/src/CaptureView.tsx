@@ -42,6 +42,7 @@ export function CaptureView({ queue, send, screenshot }: Props) {
   const [docId, setDocId] = useState(0);
   const [status, setStatus] = useState("");
   const [recording, setRecording] = useState(false);
+  const [starting, setStarting] = useState(false); // start can wait on the microphone prompt for up to 30 s
   const [rejected, setRejected] = useState<QueuedCapture[]>([]);
   const editorRef = useRef<AtomicCodeMirrorEditorHandle | null>(null);
 
@@ -120,12 +121,18 @@ export function CaptureView({ queue, send, screenshot }: Props) {
       setRecording(false);
       return;
     }
+    setStarting(true);
+    setStatus("Starte Aufnahme…");
     try {
       const r = await whisperstorm("start");
-      if (r.ok) setRecording(true);
-      else setStatus(r.error ?? "WhisperStorm läuft nicht");
+      if (r.ok) {
+        setRecording(true);
+        setStatus("");
+      } else setStatus(r.error ?? "WhisperStorm läuft nicht");
     } catch (e) {
       setStatus(e instanceof Error ? e.message : String(e));
+    } finally {
+      setStarting(false);
     }
   }
 
@@ -168,7 +175,7 @@ export function CaptureView({ queue, send, screenshot }: Props) {
       </div>
       <div className="actions">
         <button className="primary" onClick={sendText} disabled={!text.trim()}>Speichern</button>
-        <button onClick={toggleRecording} aria-pressed={recording}>{recording ? "Stopp" : "Sprache"}</button>
+        <button onClick={toggleRecording} aria-pressed={recording} disabled={starting}>{recording ? "Stopp" : "Sprache"}</button>
         {screenshot && <button onClick={takeScreenshot}>Screenshot</button>}
         <label className="button">
           Datei
