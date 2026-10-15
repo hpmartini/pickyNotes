@@ -158,3 +158,38 @@ Nach den Redelivery-Tests (`app.test.ts`) war `npm run typecheck` rot (TS2322): 
 *(Zwischenstand davor:)* typecheck ok, desktop 24 Unit-Tests (vorher 17, +7), e2e 5/5 (vorher 4/4, +1).
 
 **Explorativer e2e-Test verschärft.** `step()` tippt jetzt Zeichen für Zeichen mit `inspect()`+`assertSteady()` nach jedem Tastendruck (vorher nur einmal pro `step()`). `assertSteady` lässt `cm-atomic-h*` nur auf den drei ATX-Zeilen (Index 0..2) zu und prüft, dass jede Nicht-Heading-/Nicht-HR-/Nicht-Code-Zeile die Absatz-Schriftgröße hält (Absatz-Schriftgröße und -Familie werden lazy beim ersten Auftauchen der Zeile „Eine Zeile Text" gemerkt; Code-Zeilen werden über abweichende `font-family` übersprungen). Shift+Tab wird jetzt wirklich als `Shift+Tab` gedrückt (vorher ging `shiftKey` verloren und Tab rückte nur weiter ein); nachgeprüft per Draft in `localStorage` (vor/nach: letzte Zeile ohne führende Whitespace). Backspace auf leerem „"- " beendet die Liste: nachgeprüft per DOM-Probe (`•` aus der letzten Zeile weg). `expect.fail` ersetzt durch `expect(...).toBe(true)` mit Message. Gates erneut grün: typecheck ok, server 81 + 10 PG übersprungen, cli 5, shared 2, desktop 24, e2e 5/5. Keine Änderung an `apps/desktop/src`.
+
+## Editor: Enter auf leerem Listen-/Aufgaben-/Nummern-/Zitat-Marker (Obsidian/Notion)
+
+**Auftrag.** Nach dem Setext-Fix aus Runde 1 immer noch falsch: auf einem leeren `- `/`- [ ] `/`1. `/`> `-Marker wird beim Drücken von Enter die Liste/das Zitat ohne Trennzeile beendet, sodass die nächste Zeile als Lazy-Continuation in das vorherige Item läuft. Obsidian/Notion verhalten sich anders: nach Enter steht eine Leerzeile, und der nächste Text beginnt einen neuen Absatz.
+
+**Ursache (drei getrennte Bugs in Atomic Editor + `@codemirror/lang-markdown`):**
+- (a) Bullet/Aufgabe: Atomic Editor registriert `Prec.highest(keymap.of([{Enter: insertTightListItem}]))` (`inline-preview.js:1009`). Auf einer leeren Top-Level-Zeile `- ` leert die Funktion nur die Zeile (`view.dispatch({ changes: { from: line.from, to: line.to, insert: "" } })`) und fügt **keine** Trennzeile ein. Der nächste Tastendruck hängt deshalb am vorherigen Item als Lazy-Continuation. Eigene Keymaps bei gleicher Präzedenz verlieren.
+- (b) Nummerierte Liste: `insertNewlineContinueMarkup` (`@codemirror/lang-markdown/dist/index.js:204-248`) behandelt `2. ` (leeres nummeriertes Item) im Zweig "Move second item down" und fügt **vor** dem `2. ` eine Leerzeile plus Zeilenumbruch ein, behält aber `2. `. Der nächste Text läuft dort weiter.
+- (c) Zitat: die bisherige Erweiterung in `apps/desktop/src/lib/editor.ts` (Round 1) hat Enter auf leerer `> `-Zeile nur per `clearEmptyMarker` behandelt — Zeile wird geleert, aber **keine** Leerzeile davor gesetzt. Folge: `> zitat\n> ` ⏎ ⏎ `danach` ergab `> zitat\ndanach` und `danach` war noch im Blockquote.
+
+**Fix.** Alles in `apps/desktop/src/lib/editor.ts`, weiter über die `extensions`-Prop verdrahtet, kein node_modules-Patch. Eine Funktion `leaveEmptyMarker(view)`:
+- Selektion muss leer sein und der Cursor am Zeilenende.
+- Zeile matched `/^(\s*)([-*+]|\d+[.)])\s+(\[[ xX]\]\s*)?$/` (leerer Listen-Marker, gleiche Regex wie für Backspace, mit Capture-Gruppe für die Einrückung) und liegt in `ListItem`, oder matched `/^(\s*)(>\s*)+$/` und liegt in `Blockquote`. Beide Checks durch das vorhandene `inside(state, pos, name)` geschleust, das in `FencedCode`/`CodeBlock` sofort `false` liefert.
+- Eingerückter Listen-Marker (Capture-Gruppe 1 nicht leer): `indentLess(view)` aus `@codemirror/commands` (bereits Dependency). Ein weiteres Enter auf der jetzt oberen Ebene beendet die Liste.
+- Oberste Ebene (oder Zitat, das ist der gleiche Pfad): Zeile wird durch `state.lineBreak` ersetzt, wenn die vorige Zeile nicht leer ist, sonst durch `''`. Cursor landet direkt nach dem Insert. `userEvent: "delete"` für korrektes Undo/Redo.
+
+Verdrahtung: `Prec.highest(EditorView.domEventHandlers({keydown}))` nur für Enter ohne Shift/Ctrl/Meta/Alt und ohne `isComposing`, mit `event.preventDefault()` bei Treffer. Begründung (im Code-Kommentar): der Keymap-Dispatcher läuft als `Prec.default-domEventHandler` (`@codemirror/view/dist/index.js:9117`); ein `Prec.highest`-`keydown`-Handler feuert davor und kann Atomic + Markdown-Pfad abschneiden. Drop-Kommentar: „shortcut: … drop once Atomic accepts an Enter escape hatch."
+
+Der alte Keymap-Eintrag `clearEmptyMarker(/^\s*(>\s*)+$/, "Blockquote")` für Enter ist entfernt (durch den neuen Pfad vollständig abgedeckt); der Backspace-Eintrag `clearEmptyMarker(emptyListMarker, "ListItem")` bleibt, weil Backspace bewusst keine Leerzeile einfügen soll.
+
+**Unit-Tests (`apps/desktop/src/editor.test.tsx`):**
+- `press()` schickt jetzt für `Enter` echte `keydown`-Events auf `view.contentDOM` (statt `runScopeHandlers`), damit der DOM-Handler mitläuft. Tab/Backspace bleiben auf dem bewährten `runScopeHandlers`-Pfad.
+- Quote-Test raus (assertete die Lazy-Continuation). Neu: 4 exakte Draft-Asserts `it.each` für `- a`, `- [ ] a`, `1. a`, `> a` mit je 2 Enters + `danach` → exakt `- a\n\ndanach` (etc.). `noListOrQuoteAncestor(view, doc.length)` läuft die `resolveInner`-Kette hoch und prüft, dass weder `ListItem` noch `Blockquote` ein Vorfahre ist.
+- Verschachtelt: `- a` ⏎ Tab `b` ⏎ ⏎ ⏎ `danach` → exakt `- a\n  - b\n\ndanach`.
+- Fenced Code: `mount("- a\n```\n- \n```")`, Cursor an Position 10 (Ende der `- `-Zeile innerhalb der Umzäunung), Enter, Doc-Split enthält `- `, letzte Zeile ist immer noch ` ``` `, `hasNode("FencedCode")` weiterhin wahr. Beweist, dass der Handler innerhalb von FencedCode no-op ist und der Default-Enter (literal newline) läuft.
+- „Enter on an empty item ends the list" umbenannt auf „… and inserts a blank line before the next paragraph" und auf exakten Doc `- a\n\n` gehärtet.
+- Backspace-Tests (`- a\n- ` → `- a\n`, `1. a\n2. ` → `1. a\n`, …) bleiben grün.
+
+**e2e-Tests (`apps/desktop/e2e/editor.spec.ts`):**
+- Fünf neue Tests `it.each` (bullet, task, ordered, quote, nested): Type-Referenz-Absatz `para`, zwei Blank-Line-Enters, dann den Item-Text, zwei/drei Enters zum Beenden, `danach`. Pro Test: exakter `localStorage['picky.draft']`-Vergleich, danach: `danach`-DOM-Zeile darf weder `cm-atomic-(list|blockquote|bullet|task)` als Klassen- noch als inneres Klassen-Token enthalten, und ihre `padding-left` (per `getComputedStyle`) muss exakt der `padding-left` der `para`-Zeile entsprechen.
+- Explorativer Test: überflüssige „blank line"-Enters nach jedem Listen-/Zitat-Ausstieg entfernt (die Trennzeile liefert jetzt der Handler). `assertSteady` ist jetzt `async`, liest den aktuellen Draft per `page.evaluate` und leitet die erlaubte Heading-Klasse aus der Draft-Zeile ab (`/^(#{1,6})/`, weil Atomic `#` schon vor dem Leerzeichen als Heading rendert) — nicht mehr aus einem hartcodierten Index `i < 3`. `step()` schreibt nach jedem Aufruf einen Screenshot nach `test-results/…/step-NNN-<slug>.png` (via `test.info().outputPath`), 51 Stück pro Lauf, plus die alte `exploratory.png` am Ende. `test.setTimeout(90_000)` für die zusätzliche Per-Step-Probe.
+
+**Negativprobe.** `enterLeavesEmptyMarker`-Body auf `return false` zurückgebaut, nur die Editor-Unit-Tests laufen lassen: genau die 6 neuen Enter-Asserts brechen (alle vier `it.each`-Cases + nested + „inserts a blank line before the next paragraph"). Backspace-Asserts bleiben grün, Fence-Test grün. Handler wieder eingebaut, alle Tests grün. Die Tests fangen also genau das, was sie fangen sollen.
+
+**Stand:** typecheck ok, server 81 + 10 PG übersprungen, cli 5, shared 2, desktop **42** (vorher 37, +5 für die Enter-Asserts), e2e **10** (vorher 5, +5 für die fünf Marker-Exit-Tests).

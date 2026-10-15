@@ -23,8 +23,14 @@ function type(view: EditorView, text: string) {
     view.dispatch({ changes: { from, to, insert: ch }, selection: { anchor: from + ch.length }, userEvent: "input.type" });
   }
 }
-const press = (view: EditorView, key: string, shiftKey = false) =>
-  runScopeHandlers(view, new KeyboardEvent("keydown", { key, shiftKey, bubbles: true, cancelable: true }), "editor");
+const press = (view: EditorView, key: string, shiftKey = false) => {
+  // shortcut: our empty-marker Enter handler is a Prec.highest domEventHandler; runScopeHandlers skips it, so dispatch a real keydown only for Enter. Tab/Backspace stay on the proven runScopeHandlers path.
+  if (key === "Enter") {
+    view.contentDOM.dispatchEvent(new KeyboardEvent("keydown", { key, shiftKey, bubbles: true, cancelable: true }));
+    return true;
+  }
+  return runScopeHandlers(view, new KeyboardEvent("keydown", { key, shiftKey, bubbles: true, cancelable: true }), "editor");
+};
 const doc = (v: EditorView) => v.state.doc.toString();
 const hasNode = (v: EditorView, name: string) => {
   const found = syntaxTree(v.state).cursor();
@@ -44,13 +50,12 @@ describe("Atomic Editor lists (real CodeMirror)", () => {
     expect(doc(view)).toBe(expected);
   });
 
-  it("Enter on an empty item ends the list", () => {
+  it("Enter on an empty item ends the list and inserts a blank line before the next paragraph", () => {
     const view = mount();
     type(view, "- a");
     press(view, "Enter");
     press(view, "Enter");
-    expect(doc(view)).not.toMatch(/^- $/m);
-    expect(doc(view).startsWith("- a")).toBe(true);
+    expect(doc(view)).toBe("- a\n\n");
     expect(view.state.doc.lineAt(view.state.selection.main.head).text).toBe("");
   });
 
@@ -120,17 +125,57 @@ describe("Obsidian/Notion parity (src/lib/editor.ts)", () => {
     expect(hasNode(view, "BulletList")).toBe(true);
   });
 
-  it("Enter on an empty quote line leaves the quote", () => {
-    const view = mount();
-    type(view, "> zitat");
-    press(view, "Enter");
-    expect(doc(view)).toBe("> zitat\n> ");
-    press(view, "Enter");
-    expect(doc(view)).toBe("> zitat\n");
-    type(view, "danach");
-    expect(hasNode(view, "Blockquote")).toBe(true);
-    expect(syntaxTree(view.state).resolveInner(view.state.doc.length, -1).name).not.toBe("QuoteMark");
-    expect(view.state.doc.line(2).text).toBe("danach");
+  // Obsidian/Notion parity: Enter on an empty top-level list/quote marker exits the block AND drops a blank line so the next typed text starts a fresh paragraph (no lazy continuation). Indented empty markers outdent one level first, then a second Enter exits.
+  describe("Enter on empty marker exits with a blank separator (Obsidian/Notion parity)", () => {
+    const noListOrQuoteAncestor = (view: EditorView, pos: number) => {
+      let n: ReturnType<ReturnType<typeof syntaxTree>["resolveInner"]> | null = syntaxTree(view.state).resolveInner(pos, -1);
+      while (n) {
+        expect(n.name, `unexpected ancestor ${n.name} at pos ${pos}`).not.toBe("ListItem");
+        expect(n.name, `unexpected ancestor ${n.name} at pos ${pos}`).not.toBe("Blockquote");
+        n = n.parent;
+      }
+    };
+    const typeThenExit = (typed: string, enters: number) => {
+      const view = mount();
+      type(view, typed);
+      for (let i = 0; i < enters; i++) press(view, "Enter");
+      type(view, "danach");
+      return view;
+    };
+    it.each([
+      ["- a", 2, "- a\n\ndanach"],
+      ["- [ ] a", 2, "- [ ] a\n\ndanach"],
+      ["1. a", 2, "1. a\n\ndanach"],
+      ["> a", 2, "> a\n\ndanach"],
+    ])("typed %j + %i Enter(s) + danach -> %j", (typed, enters, expected) => {
+      const view = typeThenExit(typed, enters as number);
+      expect(doc(view)).toBe(expected);
+      noListOrQuoteAncestor(view, view.state.doc.length);
+    });
+    it("nested: indentLess then exit (three Enters)", () => {
+      const view = mount();
+      type(view, "- a");
+      press(view, "Enter");
+      press(view, "Tab");
+      type(view, "b");
+      press(view, "Enter");
+      press(view, "Enter");
+      press(view, "Enter");
+      type(view, "danach");
+      expect(doc(view)).toBe("- a\n  - b\n\ndanach");
+      noListOrQuoteAncestor(view, view.state.doc.length);
+    });
+    it("Enter on '- ' inside a fenced code block leaves the marker alone (default behaviour)", () => {
+      // shortcut: the domEventHandler short-circuits inside FencedCode so the editor's own Enter (newline) is what runs.
+      const view = mount("- a\n```\n- \n```");
+      view.dispatch({ selection: { anchor: 10 } }); // end of "- " line, inside the fence
+      press(view, "Enter");
+      // default Enter just inserts a newline; the "- " line must still exist (we did not replace it with a blank line) and the closing fence must still close the block
+      const lines = doc(view).split("\n");
+      expect(lines).toContain("- ");
+      expect(lines[lines.length - 1]).toBe("```");
+      expect(hasNode(view, "FencedCode")).toBe(true);
+    });
   });
 
   it.each([

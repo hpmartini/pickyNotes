@@ -42,10 +42,11 @@ test("typing keeps focus, lists work, draft survives a tab switch, text is reada
 //   - "# ".."### " only render headings, never "Text" + "---"/"===" underneath (Setext is off)
 //   - "- " starts a bullet only once content follows, never on a bare "-" under text
 //   - "---" under text becomes a horizontal rule, "-" under text stays paragraph text
-//   - lists (bullet, ordered, task) continue on Enter, indent on Tab, exit on empty Enter
+//   - lists (bullet, ordered, task) continue on Enter, indent on Tab, exit on empty Enter (with blank separator)
 //   - **bold**, *italic*, `code`, > quote, ```code```, [link](url) all parse
 //   - no line-height / font-size jump on non-heading lines, focus stays in the editor
 test("character-by-character typing: no unexpected heading, no line-height jump, focus stays in the editor", async ({ page }) => {
+  test.setTimeout(90_000); // ~55 step() calls × inspect + screenshot
   await page.goto("/");
   const editor = page.locator(".cm-content");
   await editor.click();
@@ -71,26 +72,25 @@ test("character-by-character typing: no unexpected heading, no line-height jump,
       };
     });
 
-  // Per-keystroke: a cm-atomic-h* class may only appear on the three ATX lines we typed (indices 0..2).
-  // The reported regression surfaces as a paragraph line silently gaining cm-atomic-h1/h2 (SetextHeading
-  // mapping), so flagging any unexpected heading-class line is the direct check. Non-heading, non-HR,
-  // non-code lines must keep the paragraph font size; code lines render in monospace and are skipped by
-  // font-family comparison.
+  // Per-keystroke: a cm-atomic-h* class may only appear on a source line that actually starts with "#" — derived from the current draft, not from a hard-coded index. Non-heading, non-HR, non-code lines must keep the paragraph font size; code lines render in monospace and are skipped by font-family comparison.
   let paragraphSize: number | undefined;
   let paragraphFontFamily: string | undefined;
-  const assertSteady = (lines: string[], classes: string[][], styles: number[], fonts: string[], focus: boolean, label: string) => {
+  const assertSteady = async (lines: string[], classes: string[][], styles: number[], fonts: string[], focus: boolean, label: string) => {
     for (let i = 0; i < lines.length; i++) {
       if (lines[i] === "Eine Zeile Text" && paragraphSize === undefined) {
         paragraphSize = styles[i];
         paragraphFontFamily = fonts[i];
       }
     }
+    const draftLines = (await page.evaluate(() => localStorage.getItem("picky.draft") ?? "")).split("\n");
     for (let i = 0; i < lines.length; i++) {
       const cls = classes[i]!;
+      const draftLine = draftLines[i] ?? "";
       if (cls.some((x) => /^cm-atomic-h[1-6]$/.test(x))) {
-        // shortcut: only the first three lines may be headings — they are the typed ATX headings; cheaper than re-deriving which line is which
-        const allowed = i < 3;
-        expect(allowed, `line ${i} (text=${JSON.stringify(lines[i])}) has a heading class but is not one of the typed ATX headings at ${label}`).toBe(true);
+        // shortcut: Atomic renders `#` (one or more hashes) as a heading as you type, before the trailing space is even there; derive the level from the count of `#`s in the draft line.
+        const m = draftLine.match(/^(#{1,6})/);
+        expect(m, `line ${i} (text=${JSON.stringify(lines[i])}) has a heading class but draft line ${JSON.stringify(draftLine)} does not start with '#' at ${label}`).toBeTruthy();
+        expect(cls.find((c) => /^cm-atomic-h[1-6]$/.test(c)), `line ${i} heading class should match draft ${JSON.stringify(draftLine)} at ${label}`).toBe(`cm-atomic-h${m![1]!.length}`);
         continue;
       }
       if (cls.includes("cm-atomic-hr")) continue;
@@ -102,20 +102,28 @@ test("character-by-character typing: no unexpected heading, no line-height jump,
     expect(focus, `focus should stay in the editor at ${label}`).toBe(true);
   };
 
+  let stepNum = 0;
   const step = async (key: string | { type: string; key: string; shiftKey?: boolean }, label: string) => {
+    const probeAfter = async () => {
+      const probe = await inspect();
+      await assertSteady(probe.lines, probe.classes, probe.styles, probe.fonts, probe.focus, label);
+    };
     if (typeof key === "string") {
       for (const ch of key) {
         await page.keyboard.type(ch);
-        const probe = await inspect();
-        assertSteady(probe.lines, probe.classes, probe.styles, probe.fonts, probe.focus, label);
+        await probeAfter();
       }
-      return;
+    } else if (key.type === "press") {
+      await page.keyboard.press(key.shiftKey ? `Shift+${key.key}` : key.key);
+      await probeAfter();
+    } else if (key.type === "down") {
+      await page.keyboard.down(key.key);
+      await probeAfter();
+    } else if (key.type === "up") {
+      await page.keyboard.up(key.key);
+      await probeAfter();
     }
-    if (key.type === "press") await page.keyboard.press(key.shiftKey ? `Shift+${key.key}` : key.key);
-    else if (key.type === "down") await page.keyboard.down(key.key);
-    else if (key.type === "up") await page.keyboard.up(key.key);
-    const probe = await inspect();
-    assertSteady(probe.lines, probe.classes, probe.styles, probe.fonts, probe.focus, label);
+    await page.locator(".editor").screenshot({ path: test.info().outputPath(`step-${String(stepNum++).padStart(3, "0")}-${label.replace(/[^a-z0-9]+/gi, "-")}.png`) });
   };
 
   // ---- ATX headings ----
@@ -153,8 +161,7 @@ test("character-by-character typing: no unexpected heading, no line-height jump,
   const afterLast = afterShiftTab.split("\n").pop() ?? "";
   expect(afterLast.startsWith("  "), `Shift+Tab should outdent; last line went from ${JSON.stringify(beforeLast)} to ${JSON.stringify(afterLast)}`).toBe(false);
   expect(afterLast.startsWith("- "), `after Shift+Tab the last line should be a top-level bullet, got ${JSON.stringify(afterLast)}`).toBe(true);
-  await step({ type: "press", key: "Enter" }, "Enter exits list");
-  await step({ type: "press", key: "Enter" }, "blank line");
+  await step({ type: "press", key: "Enter" }, "Enter exits list with blank line");
 
   // ---- bullet list: Backspace on an empty "- " item exits the bullet and leaves a clean empty line ----
   await step("- ", "empty bullet item");
@@ -166,15 +173,13 @@ test("character-by-character typing: no unexpected heading, no line-height jump,
   await step("1. eins", "ordered item");
   await step({ type: "press", key: "Enter" }, "Enter continues ordered");
   await step("zwei", "second ordered");
-  await step({ type: "press", key: "Enter" }, "Enter");
-  await step({ type: "press", key: "Enter" }, "Enter exits ordered");
-  await step({ type: "press", key: "Enter" }, "blank line");
+  await step({ type: "press", key: "Enter" }, "Enter continues from non-empty");
+  await step({ type: "press", key: "Enter" }, "Enter exits ordered with blank line");
 
   // ---- task list ----
   await step("- [ ] aufgabe", "task item");
-  await step({ type: "press", key: "Enter" }, "Enter after task");
-  await step({ type: "press", key: "Enter" }, "Enter exits task");
-  await step({ type: "press", key: "Enter" }, "blank line");
+  await step({ type: "press", key: "Enter" }, "Enter continues task");
+  await step({ type: "press", key: "Enter" }, "Enter exits task with blank line");
 
   // ---- inline marks ----
   await step("**fett**", "bold");
@@ -185,8 +190,7 @@ test("character-by-character typing: no unexpected heading, no line-height jump,
   await step({ type: "press", key: "Enter" }, "Enter after code");
   await step("> zitat", "quote");
   await step({ type: "press", key: "Enter" }, "Enter continues quote");
-  await step({ type: "press", key: "Enter" }, "Enter on empty quote line leaves the quote");
-  await step({ type: "press", key: "Enter" }, "blank line");
+  await step({ type: "press", key: "Enter" }, "Enter exits quote with blank line");
 
   // ---- fenced code: Atomic auto-closes the fence, so Enter goes into the body and ArrowDown/End leaves it ----
   await step("```", "code fence open");
@@ -242,10 +246,50 @@ test("character-by-character typing: no unexpected heading, no line-height jump,
   });
   expect(dom.focus, "focus stays in the editor").toBe(true);
 
-  // visual sanity: one screenshot for a human look — Playwright writes it under apps/desktop/test-results/ (gitignored)
+  // visual sanity: one extra screenshot at the very end, with a stable path that is easy to open from the test-results folder
   const shot = await page.locator(".editor").screenshot({ path: test.info().outputPath("exploratory.png") });
   expect(shot.length).toBeGreaterThan(0);
 });
+
+// Obsidian/Notion parity: pressing Enter on an empty list/quote marker exits the block AND inserts a blank line before the next text, so "danach" starts a fresh paragraph (no lazy continuation, no quote/list indent leaking through).
+const exits = [
+  { name: "bullet", keys: ["para", "Enter", "Enter", "- a", "Enter", "Enter", "danach"], draft: "para\n\n- a\n\ndanach" },
+  { name: "task", keys: ["para", "Enter", "Enter", "- [ ] a", "Enter", "Enter", "danach"], draft: "para\n\n- [ ] a\n\ndanach" },
+  { name: "ordered", keys: ["para", "Enter", "Enter", "1. a", "Enter", "Enter", "danach"], draft: "para\n\n1. a\n\ndanach" },
+  { name: "quote", keys: ["para", "Enter", "Enter", "> a", "Enter", "Enter", "danach"], draft: "para\n\n> a\n\ndanach" },
+  { name: "nested", keys: ["para", "Enter", "Enter", "- a", "Enter", "Tab", "b", "Enter", "Enter", "Enter", "danach"], draft: "para\n\n- a\n  - b\n\ndanach" },
+];
+for (const { name, keys, draft } of exits) {
+  test(`Enter exits empty ${name} marker: danach is a plain paragraph (no list/quote classes, no indent padding)`, async ({ page }) => {
+    await page.goto("/");
+    const editor = page.locator(".cm-content");
+    await editor.click();
+    for (const k of keys) {
+      if (k === "Enter" || k === "Tab") await page.keyboard.press(k);
+      else await page.keyboard.type(k, { delay: 10 });
+    }
+    // exact draft
+    expect(await page.evaluate(() => localStorage.getItem("picky.draft"))).toBe(draft);
+    // danach: no list/quote classes on the line or its inner cm-atomic-* elements, same padding-left as a plain paragraph line
+    const probe = await page.evaluate(() => {
+      const lines = [...document.querySelectorAll(".cm-content .cm-line")] as HTMLElement[];
+      const find = (text: string) => lines.find((l) => l.textContent === text);
+      const danach = find("danach");
+      const para = find("para");
+      if (!danach || !para) return null;
+      const listOrQuote = /cm-atomic-(list|blockquote|bullet|task)/;
+      return {
+        danach: { classes: [...danach.classList], inner: [...new Set([...danach.querySelectorAll("[class*=cm-atomic-]")].flatMap((e) => [...e.classList]))], paddingLeft: getComputedStyle(danach).paddingLeft },
+        para: { paddingLeft: getComputedStyle(para).paddingLeft },
+        rule: listOrQuote.source,
+      };
+    });
+    expect(probe, "danach and para lines should both exist").not.toBeNull();
+    expect(probe!.danach.classes.some((c) => new RegExp(probe!.rule).test(c)), `danach line classes should not match ${probe!.rule}, got ${JSON.stringify(probe!.danach.classes)}`).toBe(false);
+    expect(probe!.danach.inner.some((c) => new RegExp(probe!.rule).test(c)), `danach inner classes should not match ${probe!.rule}, got ${JSON.stringify(probe!.danach.inner)}`).toBe(false);
+    expect(probe!.danach.paddingLeft, `danach paddingLeft ${probe!.danach.paddingLeft} should match para paddingLeft`).toBe(probe!.para.paddingLeft);
+  });
+}
 
 for (const [width, height] of [[375, 640], [768, 700], [1280, 800]]) {
   test(`layout at ${width}px: no sideways scroll, no permanent editor scrollbar, no overlapping actions`, async ({ page }) => {
