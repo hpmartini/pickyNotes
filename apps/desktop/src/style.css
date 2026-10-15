@@ -66,3 +66,34 @@ label { display: grid; gap: var(--space-1); font-weight: 500; }
 
 /* Obsidian-style :shortcode: emoji replacement; the actual character is set by the JS widget */
 .cm-pn-emoji { font-style: normal; }
+.cm-pn-emoji-unknown { opacity: 0.7; }
+
+/* Subscript/superscript marks — the source stays `H~2~O` and `x^2^`, the inner chars get a small/baseline-shifted class. */
+.cm-pn-sub { font-size: 0.75em; vertical-align: sub; }
+.cm-pn-sup { font-size: 0.75em; vertical-align: super; }
+
+/* Code-fence hiding: the opening and closing ``` lines are invisible while the cursor is outside the block. */
+.cm-pn-fence-hidden { display: none; }
+
+/* Table toolbar: floats above the editor when the cursor sits inside a Table. */
+.cm-pn-table-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  gap: 4px;
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+  font-size: 12px;
+}
+.cm-pn-table-toolbar button {
+  font-size: 12px;
+  padding: 2px 6px;
+}
+
+/* Inline image preview in the editor. */
+.cm-pn-inline-image { max-width: 100%; max-height: 12em; vertical-align: text-bottom; border-radius: 4px; }
+
+/* File-chip decoration for non-image attachments. */
+.cm-pn-file-chip { padding: 0 6px; border-radius: 4px; background: var(--surface); border: 1px solid var(--line); font-size: 0.9em; }

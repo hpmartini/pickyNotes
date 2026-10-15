@@ -18,6 +18,7 @@ vi.mock("@atomic-editor/editor", async () => {
   return {
     AtomicCodeMirrorEditor: (p: P) => <Inner key={p.documentId ?? p.markdownSource} {...p} />,
     highlightMarkdown: {}, // imported by lib/editor.ts to build editorExtensions
+    tables: () => [], // editor.ts uses atomicTables()
   };
 });
 vi.mock("@atomic-editor/editor/styles.css", () => ({}));

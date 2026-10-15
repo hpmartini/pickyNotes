@@ -226,16 +226,105 @@ describe("Emoji shortcode :name: -> Unicode glyph", () => {
     expect(widget, `expected one .cm-pn-emoji widget for ${shortcode}`).not.toBeNull();
     expect(widget!.textContent).toBe(glyph);
   });
-  it("unknown shortcodes keep the source and render the literal text", () => {
+  it("unknown shortcodes keep the source and render the literal text (no widget)", () => {
+    // Defect fix: unknown names stay as plain text, no decoration.
     const view = mount(":nonsense:");
     expect(doc(view)).toBe(":nonsense:");
-    const widget = view.dom.querySelector(".cm-pn-emoji");
-    expect(widget).not.toBeNull();
-    expect(widget!.textContent).toBe(":nonsense:");
+    expect(view.dom.querySelector(".cm-pn-emoji")).toBeNull();
+    expect(view.dom.querySelector(".cm-content")!.textContent).toContain(":nonsense:");
   });
   it("multiple shortcodes on one line render independently", () => {
     const view = mount(":joy: and :rocket:");
     const widgets = [...view.dom.querySelectorAll(".cm-pn-emoji")];
     expect(widgets.map((w) => w.textContent)).toEqual(["😂", "🚀"]);
+  });
+  it("does not decorate shortcodes inside inline code", () => {
+    const view = mount("a `:joy:` b");
+    expect(view.dom.querySelector(".cm-pn-emoji")).toBeNull();
+    expect(view.dom.querySelector(".cm-content")!.textContent).toContain(":joy:");
+  });
+  it("does not decorate shortcodes inside a fenced code block", () => {
+    const view = mount("```\n:joy:\n```");
+    expect(view.dom.querySelector(".cm-pn-emoji")).toBeNull();
+  });
+  it("does not decorate escaped shortcodes", () => {
+    const view = mount("\\:joy:");
+    expect(view.dom.querySelector(".cm-pn-emoji")).toBeNull();
+    expect(view.dom.querySelector(".cm-content")!.textContent).toContain(":joy:");
+  });
+  it("reveals the source text when the selection sits inside the shortcode", () => {
+    const view = mount(":rocket:");
+    view.dispatch({ selection: { anchor: 3 } }); // cursor inside the shortcode
+    expect(view.dom.querySelector(".cm-pn-emoji")).toBeNull();
+    expect(view.dom.querySelector(".cm-content")!.textContent).toBe(":rocket:");
+  });
+  it("maps :grin: to 😁", () => {
+    const view = mount(":grin:");
+    const widget = view.dom.querySelector(".cm-pn-emoji");
+    expect(widget!.textContent).toBe("😁");
+  });
+});
+
+// Subscript `~x~` (single tilde) and superscript `^x^` are not in lezer-markdown; the editor wraps them in mark decorations.
+describe("Subscript (~x~) and superscript (^x^)", () => {
+  it("wraps a single-tilde subscript in cm-pn-sub", () => {
+    const view = mount("H~2~O");
+    expect(doc(view)).toBe("H~2~O");
+    const marks = [...view.dom.querySelectorAll(".cm-pn-sub")];
+    expect(marks.map((m) => m.textContent)).toEqual(["2"]);
+  });
+  it("does NOT shade strikethrough (~~) as subscript", () => {
+    const view = mount("~~deleted~~");
+    expect(view.dom.querySelector(".cm-pn-sub")).toBeNull();
+  });
+  it("wraps a single-caret superscript in cm-pn-sup", () => {
+    const view = mount("x^2^");
+    expect(doc(view)).toBe("x^2^");
+    const marks = [...view.dom.querySelectorAll(".cm-pn-sup")];
+    expect(marks.map((m) => m.textContent)).toEqual(["2"]);
+  });
+  it("does not shade sub/sup inside inline code", () => {
+    const view = mount("`H~2~O` and `x^2^`");
+    expect(view.dom.querySelector(".cm-pn-sub")).toBeNull();
+    expect(view.dom.querySelector(".cm-pn-sup")).toBeNull();
+  });
+});
+
+// Fence hiding: opening and closing ``` lines get the cm-pn-fence-hidden class when the cursor is outside the block.
+describe("Code-fence hiding", () => {
+  const fenceLineHas = (view: EditorView, predicate: (line: HTMLElement) => boolean) =>
+    [...view.dom.querySelectorAll(".cm-line")].some(predicate);
+
+  it("hides the opening and closing fence lines when the cursor is after the block", () => {
+    const view = mount("```\nx\n```"); // doc length 9; the cursor goes to 9 by default (end of doc)
+    expect(fenceLineHas(view, (l) => l.classList.contains("cm-pn-fence-hidden"))).toBe(true);
+  });
+  it("does not hide fences when the cursor is inside the block", () => {
+    const view = mount("```\nx\n```");
+    view.dispatch({ selection: { anchor: 5 } }); // inside the block (the body line)
+    expect(view.dom.querySelector(".cm-pn-fence-hidden")).toBeNull();
+  });
+  it("hides both fences of a 4-backtick block too", () => {
+    const view = mount("````\nx\n````");
+    const hidden = [...view.dom.querySelectorAll(".cm-line")].filter((l) => l.classList.contains("cm-pn-fence-hidden"));
+    expect(hidden.length).toBe(2);
+    // Atomic strips the fence text from the DOM, so we just check the classes (line 1 has both cm-pn-fence-hidden + cm-atomic-fenced-code).
+    expect(hidden.every((l) => l.classList.contains("cm-atomic-fenced-code"))).toBe(true);
+  });
+});
+
+// Tables: Atomic parses the table node; our toolbar extension writes valid GFM back, and the alignment (`:--`/`:-:`/`--:`) survives a re-parse.
+describe("Table source preserves alignment on re-parse", () => {
+  it("keeps the centering marker (:---:) after a no-op keystroke", () => {
+    const view = mount("| a | b |\n| :--- | :---: |\n| 1 | 2 |");
+    expect(doc(view)).toContain("| :--- | :---: |");
+    type(view, "");
+    expect(doc(view)).toContain(":---:"); // centering preserved
+  });
+  it("the right-aligned delimiter (---:) survives a no-op keystroke", () => {
+    const view = mount("| a | b |\n| --- | ---: |\n| 1 | 2 |");
+    expect(doc(view)).toContain("| --- | ---: |");
+    type(view, "");
+    expect(doc(view)).toContain("---:");
   });
 });
