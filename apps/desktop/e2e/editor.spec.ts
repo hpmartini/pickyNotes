@@ -59,12 +59,14 @@ test("character-by-character typing: no unexpected heading, no line-height jump,
         classes: [...line.classList],
         fontSize: parseFloat(getComputedStyle(line).fontSize),
         fontFamily: getComputedStyle(line).fontFamily,
+        inner: [...new Set([...line.querySelectorAll("[class*=cm-atomic-]")].flatMap((e) => [...e.classList]))],
       }));
       return {
         lines: data.map((d) => d.text),
         classes: data.map((d) => d.classes),
         styles: data.map((d) => d.fontSize),
         fonts: data.map((d) => d.fontFamily),
+        inner: data.map((d) => d.inner),
         focus: document.activeElement instanceof Node && document.querySelector(".cm-content")!.contains(document.activeElement),
       };
     });
@@ -152,13 +154,13 @@ test("character-by-character typing: no unexpected heading, no line-height jump,
   expect(afterLast.startsWith("  "), `Shift+Tab should outdent; last line went from ${JSON.stringify(beforeLast)} to ${JSON.stringify(afterLast)}`).toBe(false);
   expect(afterLast.startsWith("- "), `after Shift+Tab the last line should be a top-level bullet, got ${JSON.stringify(afterLast)}`).toBe(true);
   await step({ type: "press", key: "Enter" }, "Enter exits list");
+  await step({ type: "press", key: "Enter" }, "blank line");
 
-  // ---- bullet list: Backspace on an empty "- " item exits the bullet ----
+  // ---- bullet list: Backspace on an empty "- " item exits the bullet and leaves a clean empty line ----
   await step("- ", "empty bullet item");
   await step({ type: "press", key: "Backspace" }, "Backspace exits empty bullet");
-  const probeAfterBs = await inspect();
-  const lastLineAfterBs = probeAfterBs.lines[probeAfterBs.lines.length - 1] ?? "";
-  expect(lastLineAfterBs.includes("•"), `Backspace on empty bullet should drop the bullet; last line is ${JSON.stringify(lastLineAfterBs)}`).toBe(false);
+  const draftAfterBs = await page.evaluate(() => localStorage.getItem("picky.draft") ?? "");
+  expect(draftAfterBs.split("\n").pop(), "Backspace on an empty bullet must leave a completely empty line (indent spaces would nest the next list)").toBe("");
 
   // ---- ordered list ----
   await step("1. eins", "ordered item");
@@ -166,11 +168,13 @@ test("character-by-character typing: no unexpected heading, no line-height jump,
   await step("zwei", "second ordered");
   await step({ type: "press", key: "Enter" }, "Enter");
   await step({ type: "press", key: "Enter" }, "Enter exits ordered");
+  await step({ type: "press", key: "Enter" }, "blank line");
 
   // ---- task list ----
   await step("- [ ] aufgabe", "task item");
   await step({ type: "press", key: "Enter" }, "Enter after task");
   await step({ type: "press", key: "Enter" }, "Enter exits task");
+  await step({ type: "press", key: "Enter" }, "blank line");
 
   // ---- inline marks ----
   await step("**fett**", "bold");
@@ -180,44 +184,63 @@ test("character-by-character typing: no unexpected heading, no line-height jump,
   await step("`code`", "inline code");
   await step({ type: "press", key: "Enter" }, "Enter after code");
   await step("> zitat", "quote");
-  await step({ type: "press", key: "Enter" }, "Enter after quote");
-  await step({ type: "press", key: "Enter" }, "blank");
+  await step({ type: "press", key: "Enter" }, "Enter continues quote");
+  await step({ type: "press", key: "Enter" }, "Enter on empty quote line leaves the quote");
+  await step({ type: "press", key: "Enter" }, "blank line");
 
-  // ---- fenced code ----
+  // ---- fenced code: Atomic auto-closes the fence, so Enter goes into the body and ArrowDown/End leaves it ----
   await step("```", "code fence open");
+  await step({ type: "press", key: "Enter" }, "Enter into code body");
   await step("code hier", "code body");
-  await step({ type: "press", key: "Enter" }, "Enter in code body");
-  await step("```", "code fence close");
+  await step({ type: "press", key: "ArrowDown" }, "to closing fence");
+  await step({ type: "press", key: "End" }, "end of closing fence");
   await step({ type: "press", key: "Enter" }, "Enter after fence");
-  await step({ type: "press", key: "Enter" }, "blank");
+  await step({ type: "press", key: "Enter" }, "blank line");
 
   // ---- link ----
   await step("[label](https://example.org)", "link");
   await step({ type: "press", key: "Enter" }, "Enter after link");
 
-  // ---- final regression: the Setext bug specifically ----
-  // The reported bug: typing a line, Enter, then "-" turned the line above into a huge title.
-  // After the fix, the only way a line gets cm-atomic-h1/h2 is via an ATX ("# "/"## ") source line.
-  // We verify by enumerating every DOM line that has a heading class and checking it was one of the
-  // three ATX lines we typed. ("Titel" / "Untertitel" / "Tief" are the rendered textContent of those
-  // three lines; the "# "/"## "/"### " prefix is hidden by inline-preview.)
-  const finalProbe = await inspect();
-  const allowedHeadingRendered = new Set(["Titel", "Untertitel", "Tief"]);
-  for (let i = 0; i < finalProbe.lines.length; i++) {
-    const cls = finalProbe.classes[i]!;
-    if (!cls.some((c) => /^cm-atomic-h[1-6]$/.test(c))) continue;
-    const rendered = finalProbe.lines[i]!.trim();
-    expect(allowedHeadingRendered.has(rendered), `DOM line ${i} (${JSON.stringify(rendered)}) has a heading class but its source wasn't "# ${rendered}"`).toBe(true);
-  }
+  // ---- final: the markdown source is exactly what was typed (no auto-inserted markers, no lost/merged lines) ----
+  const expected = [
+    "# Titel", "## Untertitel", "### Tief", "",
+    "Eine Zeile Text", "-", "---", "",
+    "- eins", "- zwei", "  - eingerückt", "",
+    "1. eins", "2. zwei", "",
+    "- [ ] aufgabe", "",
+    "**fett**", "*kursiv*", "`code`", "> zitat", "",
+    "```", "code hier", "```", "",
+    "[label](https://example.org)", "",
+  ];
+  expect(await page.evaluate(() => localStorage.getItem("picky.draft"))).toBe(expected.join("\n"));
 
-  // The paragraph line "Eine Zeile Text" must stay a paragraph (no heading class anywhere on it).
-  const paragraphIdx = finalProbe.lines.findIndex((t) => t.trim() === "Eine Zeile Text");
-  expect(paragraphIdx, `"Eine Zeile Text" should appear in the rendered DOM`).toBeGreaterThanOrEqual(0);
-  expect(finalProbe.classes[paragraphIdx]!.some((c) => /^cm-atomic-h[1-6]$/.test(c)), `"Eine Zeile Text" must not have a heading class`).toBe(false);
-
-  // The `---` we typed should land as a horizontal rule.
-  const hrCount = finalProbe.classes.filter((c) => c.includes("cm-atomic-hr")).length;
-  expect(hrCount, "at least one horizontal rule from the typed `---`").toBeGreaterThanOrEqual(1);
+  // ---- final: every DOM line renders what its source line says (DOM line i == source line i) ----
+  const dom = await inspect();
+  expect(dom.lines).toHaveLength(expected.length);
+  const heading = (cls: string[]) => cls.find((c) => /^cm-atomic-h[1-6]$/.test(c));
+  expected.forEach((src, i) => {
+    const cls = dom.classes[i]!;
+    const inner = dom.inner[i]!;
+    const why = `DOM line ${i} for source ${JSON.stringify(src)} (classes ${cls}, inner ${inner}, text ${JSON.stringify(dom.lines[i])})`;
+    const atx = src.match(/^(#{1,3}) /);
+    expect(heading(cls), why).toBe(atx ? `cm-atomic-h${atx[1]!.length}` : undefined); // heading class only on # lines
+    expect(cls.includes("cm-atomic-hr"), why).toBe(src === "---");
+    expect(cls.includes("cm-atomic-blockquote"), why).toBe(src.startsWith("> ")); // quote does not leak onto the fence/link below
+    expect(cls.includes("cm-atomic-fenced-code"), why).toBe(["```", "code hier"].includes(src));
+    if (/^\s*(- |\d+\. )./.test(src)) expect(inner, why).toContain("cm-atomic-list-marker");
+    if (/^\s*- \[ \]/.test(src)) expect(inner, why).toContain("cm-atomic-task-checkbox");
+    else if (/^\s*- ./.test(src)) expect(inner, why).toContain("cm-atomic-bullet");
+    if (src === "**fett**") expect(inner, why).toContain("cm-atomic-strong");
+    if (src === "*kursiv*") expect(inner, why).toContain("cm-atomic-em");
+    if (src === "`code`") expect(inner, why).toContain("cm-atomic-inline-code");
+    if (src.startsWith("[label]")) {
+      expect(inner, why).toContain("cm-atomic-link");
+      expect(dom.lines[i], why).toContain("label");
+    }
+    if (src === "code hier") expect(dom.fonts[i], why).not.toBe(paragraphFontFamily); // monospace, not the quote/paragraph font
+    if (src === "Eine Zeile Text") expect(dom.styles[i], why).toBe(paragraphSize);
+  });
+  expect(dom.focus, "focus stays in the editor").toBe(true);
 
   // visual sanity: one screenshot for a human look — Playwright writes it under apps/desktop/test-results/ (gitignored)
   const shot = await page.locator(".editor").screenshot({ path: test.info().outputPath("exploratory.png") });

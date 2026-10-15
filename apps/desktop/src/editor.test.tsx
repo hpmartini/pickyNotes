@@ -104,3 +104,63 @@ describe("Setext headings are disabled (# only)", () => {
     expect(hasNode(view, "ListItem")).toBe(true);
   });
 });
+
+describe("Obsidian/Notion parity (src/lib/editor.ts)", () => {
+  it.each(["**fett**", "*kursiv*", "__fett__", "_kursiv_", "`code`"])("typing %j leaves exactly what was typed", (text) => {
+    const view = mount();
+    type(view, text);
+    expect(doc(view)).toBe(text);
+    expect(view.state.selection.main.head).toBe(text.length);
+  });
+
+  it("typing * still starts a list at a line start", () => {
+    const view = mount();
+    type(view, "* a");
+    expect(doc(view)).toBe("* a");
+    expect(hasNode(view, "BulletList")).toBe(true);
+  });
+
+  it("Enter on an empty quote line leaves the quote", () => {
+    const view = mount();
+    type(view, "> zitat");
+    press(view, "Enter");
+    expect(doc(view)).toBe("> zitat\n> ");
+    press(view, "Enter");
+    expect(doc(view)).toBe("> zitat\n");
+    type(view, "danach");
+    expect(hasNode(view, "Blockquote")).toBe(true);
+    expect(syntaxTree(view.state).resolveInner(view.state.doc.length, -1).name).not.toBe("QuoteMark");
+    expect(view.state.doc.line(2).text).toBe("danach");
+  });
+
+  it.each([
+    ["- a\n- ", "- a\n"],
+    ["1. a\n2. ", "1. a\n"],
+    ["- [ ] a\n- [ ] ", "- [ ] a\n"],
+    ["- a\n  - ", "- a\n"],
+  ])("Backspace on the empty marker of %j drops the whole marker", (typed, expected) => {
+    const view = mount(typed);
+    view.dispatch({ selection: { anchor: view.state.doc.length } });
+    press(view, "Backspace");
+    expect(doc(view)).toBe(expected);
+  });
+
+  it("a new task item after an exited list starts a fresh list item", () => {
+    const view = mount();
+    type(view, "- a");
+    press(view, "Enter");
+    press(view, "Backspace");
+    type(view, "- [ ] b");
+    expect(doc(view)).toBe("- a\n- [ ] b");
+  });
+
+  it("Backspace leaves non-empty lines and fenced code alone", () => {
+    const view = mount("- ab\n```\n- \n```");
+    view.dispatch({ selection: { anchor: 4 } });
+    press(view, "Backspace");
+    expect(doc(view)).toBe("- a\n```\n- \n```");
+    view.dispatch({ selection: { anchor: doc(view).indexOf("- \n```") + 2 } });
+    press(view, "Backspace");
+    expect(doc(view)).toBe("- a\n```\n-\n```");
+  });
+});
