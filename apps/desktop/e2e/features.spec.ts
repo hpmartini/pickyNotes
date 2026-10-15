@@ -88,6 +88,138 @@ test("table: 3-column table, align center via toolbar", async ({ page }) => {
   await expect.poll(() => page.evaluate(() => localStorage.getItem("picky.draft") ?? "")).toContain(":---:");
 });
 
+const getDraft = (page: Page) => page.evaluate(() => localStorage.getItem("picky.draft") ?? "");
+
+for (const [typed, expected] of [["- [", "- [ ] "], ["- [ ", "- [ ] "], ["- [ ]", "- [ ] "], ["- [x]", "- [x] "], ["- [X]", "- [x] "]] as const) {
+  test(`task input: typing "${typed}" char by char yields a real checkbox that toggles`, async ({ page }) => {
+    await page.goto("/");
+    await page.locator(".cm-content").click();
+    await steps(page, `task-${typed}`, [...typed]);
+    await expect.poll(() => getDraft(page)).toBe(expected);
+    const box = page.locator(".cm-atomic-task-checkbox");
+    await expect(box).toHaveCount(1);
+    await box.click();
+    const toggled = expected.includes("[x]") ? "- [ ] " : "- [x] ";
+    await expect.poll(() => getDraft(page)).toBe(toggled);
+    await page.locator(".cm-atomic-task-checkbox").click();
+    await expect.poll(() => getDraft(page)).toBe(expected);
+  });
+}
+
+test("task input: text after the checkbox and plain links in list items keep typing", async ({ page }) => {
+  await page.goto("/");
+  await page.locator(".cm-content").click();
+  await steps(page, "task-text", [..."- [ ] milch", { key: "Enter" }]);
+  await expect.poll(() => getDraft(page)).toBe("- [ ] milch\n- [ ] ");
+  await page.keyboard.press("ControlOrMeta+a");
+  await page.keyboard.press("Backspace");
+  await steps(page, "task-link", [..."- [a](u)"]);
+  await expect.poll(() => getDraft(page)).toBe("- [a](u)");
+  await expect(page.locator(".cm-atomic-task-checkbox")).toHaveCount(0);
+});
+
+test("fence: 4-backtick and ````javascript blocks hide both fences outside, ArrowDown leaves the block", async ({ page }) => {
+  await page.goto("/");
+  await page.locator(".cm-content").click();
+  await steps(page, "fence4", [..."````javascript", { key: "Enter" }, ..."let a = 1;"]);
+  // The auto-closed fence must have grown with the opening one; cursor inside → both lines visible.
+  expect(await getDraft(page)).toBe("````javascript\nlet a = 1;\n````");
+  await expect(page.locator(".cm-pn-fence-hidden")).toHaveCount(0);
+  await steps(page, "fence4-exit", [{ key: "ArrowDown" }, ..."danach"]);
+  const draft = await getDraft(page);
+  expect(draft).toBe("````javascript\nlet a = 1;\n````\ndanach");
+  await expect(page.locator(".cm-pn-fence-hidden")).toHaveCount(2);
+  // The closing fence never shows as text: no visible line holds a bare backtick run.
+  const visible = (await page.locator(".cm-line:visible").allInnerTexts()).filter(Boolean); // Atomic adds empty padding lines around code blocks
+  expect(visible.filter((l) => /^`{3,}$/.test(l.trim()))).toEqual([]);
+  expect(visible).toEqual(["let a = 1;", "danach"]);
+  // Back into the block: Arrow-up reveals the fences again.
+  await page.keyboard.press("ArrowUp");
+  await page.keyboard.press("ArrowUp");
+  await expect(page.locator(".cm-pn-fence-hidden")).toHaveCount(0);
+});
+
+test("fence: ``` block, ArrowDown from the last body line leaves the block", async ({ page }) => {
+  await page.goto("/");
+  await page.locator(".cm-content").click();
+  await steps(page, "fence3", [..."```", { key: "Enter" }, ..."x", { key: "ArrowDown" }, ..."y"]);
+  expect(await getDraft(page)).toBe("```\nx\n```\ny");
+  await expect(page.locator(".cm-pn-fence-hidden")).toHaveCount(2);
+});
+
+test("table: alignment shows in the DOM, survives cell edits, toolbar controls change rows/columns/width", async ({ page }) => {
+  await page.goto("/");
+  await page.locator(".cm-content").click();
+  await page.keyboard.insertText("| a | b | c |\n| :--- | :---: | ---: |\n| 1 | 2 | 3 |");
+  await page.keyboard.press("ControlOrMeta+Home");
+  await page.screenshot({ path: test.info().outputPath("table-0-aligned.png") });
+  const aligns = () => page.locator(".cm-atomic-table tbody td").evaluateAll((tds) => tds.map((td) => getComputedStyle(td).textAlign));
+  await expect.poll(aligns).toEqual(["left", "center", "right"]);
+  await expect(page.locator(".cm-atomic-table td.cm-pn-align-center")).toHaveCount(1);
+  // Cell edit via the widget: Atomic would flatten the delimiter row to `---`.
+  await page.locator(".cm-atomic-table td").first().click();
+  await expect(page.locator(".cm-pn-table-toolbar")).toBeVisible();
+  await page.keyboard.type("Z");
+  await expect.poll(() => getDraft(page)).toContain("| 1Z | 2 | 3 |");
+  expect((await getDraft(page)).split("\n")[1]).toBe("| :--- | :---: | ---: |");
+  await page.screenshot({ path: test.info().outputPath("table-1-edited.png") });
+  const bar = page.locator(".cm-pn-table-toolbar");
+  const click = (name: string) => bar.getByRole("button", { name }).dispatchEvent("mousedown");
+  await click("⊕ Zeile");
+  await expect.poll(async () => (await getDraft(page)).split("\n").length).toBe(4);
+  await click("⊕ Spalte");
+  await expect.poll(async () => (await getDraft(page)).split("\n")[0]).toBe("| a | b | c | Spalte |");
+  expect((await getDraft(page)).split("\n")[1]).toBe("| :--- | :---: | ---: | --- |");
+  await click("⊖ Spalte");
+  await click("⊖ Zeile");
+  await expect.poll(async () => (await getDraft(page)).split("\n").length).toBe(3);
+  const widthBefore = await page.locator(".cm-atomic-table th").first().evaluate((e) => (e as HTMLElement).style.minWidth);
+  await click("Breite +");
+  await expect.poll(() => page.locator(".cm-atomic-table th").first().evaluate((e) => (e as HTMLElement).style.minWidth)).not.toBe(widthBefore);
+  await click("⇥ R");
+  await expect.poll(aligns).toEqual(["right", "right", "right"]);
+  const final = await getDraft(page);
+  expect(final.split("\n")[1]).toMatch(/^\| -{3,}: \| -{3,}: \| -{3,}: \|$/);
+  await page.screenshot({ path: test.info().outputPath("table-2-right.png") });
+});
+
+test("sub/sup HTML: <sub>/<sup> tags are hidden outside the cursor, text is lowered/raised", async ({ page }) => {
+  await page.goto("/");
+  await page.locator(".cm-content").click();
+  await steps(page, "html-subsup", [..."H<sub>2</sub>O x<sup>2</sup>", { key: "Enter" }, ..."ende"]);
+  expect(await getDraft(page)).toBe("H<sub>2</sub>O x<sup>2</sup>\nende");
+  await expect(page.locator(".cm-pn-sub")).toHaveText("2");
+  await expect(page.locator(".cm-pn-sup")).toHaveText("2");
+  await expect(page.locator(".cm-line").first()).toHaveText("H2O x2");
+});
+
+test("paste/drop: a PDF becomes a [name](pending:id) chip, a dropped image previews", async ({ page }) => {
+  await page.goto("/");
+  await page.locator(".cm-content").click();
+  await steps(page, "pdf", [..."vor", { key: "Enter" }]);
+  await page.evaluate(async () => {
+    const dt = new DataTransfer();
+    dt.items.add(new File([new Uint8Array([0x25, 0x50, 0x44, 0x46])], "bericht.pdf", { type: "application/pdf" }));
+    document.querySelector(".cm-content")!.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+  });
+  await expect.poll(() => getDraft(page)).toMatch(/^vor\n\[bericht\.pdf\]\(pending:[a-f0-9-]+\)$/);
+  await expect(page.locator(".cm-pn-file-chip")).toHaveText("📎 bericht.pdf");
+  await page.locator(".editor").screenshot({ path: test.info().outputPath("pdf-paste.png") });
+  // Drop an image onto the editor: lands as an inline image preview.
+  await page.evaluate(async () => {
+    const dt = new DataTransfer();
+    const png = Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="), (c) => c.charCodeAt(0));
+    dt.items.add(new File([png], "drop.png", { type: "image/png" }));
+    const el = document.querySelector(".cm-content")!;
+    const r = el.getBoundingClientRect();
+    el.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true, clientX: r.left + 5, clientY: r.top + 5 }));
+  });
+  await expect.poll(() => getDraft(page)).toMatch(/!\[drop\.png\]\(pending:[a-f0-9-]+\)/);
+  await expect(page.locator(".cm-content .cm-atomic-image img")).toHaveAttribute("src", /^blob:/);
+  await page.locator(".editor").screenshot({ path: test.info().outputPath("drop-image.png") });
+  await page.getByRole("button", { name: /Speichern|Senden/ }).count();
+});
+
 test("paste: pasting an image inserts an inline `![name](pending:<id>)` link", async ({ page }) => {
   await page.goto("/");
   const editor = page.locator(".cm-content");

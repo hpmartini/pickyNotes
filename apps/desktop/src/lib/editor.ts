@@ -3,7 +3,7 @@ import { highlightMarkdown, tables as atomicTables } from "@atomic-editor/editor
 import { indentLess } from "@codemirror/commands";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { syntaxTree } from "@codemirror/language";
-import { type EditorState, Prec, Range } from "@codemirror/state";
+import { Annotation, EditorState, Prec, Range, StateField } from "@codemirror/state";
 import { Decoration, type DecorationSet, EditorView, keymap, ViewPlugin, WidgetType } from "@codemirror/view";
 
 // shortcut: duplicates Atomic Editor's internal markdown({base: markdownLanguage, extensions: [highlightMarkdown]}) to add {remove: ["SetextHeading"]} and pass codeLanguages so fenced blocks get syntax highlighting (Atomic wires the same in its default editor); Prec.high wins over the built-in language facet; drop once Atomic Editor accepts lezer extensions.
@@ -82,11 +82,48 @@ const enterLeavesEmptyMarker = EditorView.domEventHandlers({
   },
 });
 
-// shortcut: Atomic Editor already converts `- [ ]` into a TaskList node and renders a real checkbox.
-// The defect list mentions "task checkboxes" only because the toggle (clicking the checkbox in the preview)
-// must round-trip into the markdown without the user typing — Atomic's input handler does that already.
-// We do not add another inputHandler here because it fights Atomic's: typing `- [` then ` ` then `]` would
-// double-insert `]` and break the source round-trip.
+// Task list typing: Atomic renders a checkbox (and toggles `[ ]`/`[x]` on click) only for `- [ ] `, but typing `- [` yields `- []`.
+// Typing `[` right after a list marker therefore writes `[ ] ` at once; the characters of `[ ]`/`[x]` typed next are folded into it
+// (x/X checks, space/`]` are swallowed) and any other character reverts to a plain `[` so `- [link](url)` still types.
+// State: 0 off, 1 `[` just converted (accepts x / space / `]` / reverts on anything else), 2 after x or space (accepts `]`), 3 after `]` (swallows one trailing space).
+const taskMarker = Annotation.define<number>();
+const taskTyping = StateField.define<number>({
+  create: () => 0,
+  update: (v, tr) => tr.annotation(taskMarker) ?? (tr.docChanged || tr.selection ? 0 : v),
+});
+const taskListInput = EditorView.inputHandler.of((view, from, to, text) => {
+  const { state } = view;
+  if (from !== to) return false;
+  const phase = state.field(taskTyping);
+  if (phase && state.selection.main.head === from && /^\[[ xX]\] $/.test(state.doc.sliceString(from - 4, from))) {
+    const step = (next: number, changes?: { from: number; to: number; insert: string }) =>
+      view.dispatch({ ...(changes ? { changes } : {}), selection: { anchor: from }, annotations: taskMarker.of(next), userEvent: "input.type" });
+    if (phase === 1 && (text === "x" || text === "X")) step(2, { from: from - 3, to: from - 2, insert: "x" });
+    else if (phase === 1 && text === " ") step(2);
+    else if ((phase === 1 || phase === 2) && text === "]") step(3);
+    else if (phase === 3 && text === " ") step(0);
+    else if (phase === 1) view.dispatch({ changes: { from: from - 4, to: from, insert: "[" + text }, selection: { anchor: from - 3 + text.length }, userEvent: "input.type" });
+    else return false;
+    return true;
+  }
+  const line = state.doc.lineAt(from);
+  if (text !== "[" || state.doc.sliceString(from, line.to) !== "" || !/^\s*([-*+]|\d+[.)]) $/.test(state.doc.sliceString(line.from, from)) || !inside(state, from)) return false;
+  view.dispatch({ changes: { from, insert: "[ ] " }, selection: { anchor: from + 4 }, annotations: taskMarker.of(1), userEvent: "input.type" });
+  return true;
+});
+
+// Atomic auto-closes ``` with a 3-backtick fence; typing a 4th (5th…) backtick on the opening line must grow the closing fence too, else the block never closes.
+const growFenceWithOpening = EditorView.inputHandler.of((view, from, to, text) => {
+  const { state } = view;
+  if (text !== "`" || from !== to) return false;
+  const line = state.doc.lineAt(from);
+  const m = state.doc.sliceString(line.from, from).match(/^(\s{0,3})(`{3,})$/);
+  if (!m || from !== line.to || line.number === state.doc.lines) return false;
+  const next = state.doc.line(line.number + 1);
+  if (next.text !== m[1]! + m[2]!) return false;
+  view.dispatch({ changes: [{ from, insert: "`" }, { from: next.to, insert: "`" }], selection: { anchor: from + 1 }, userEvent: "input.type" });
+  return true;
+});
 
 /** Parse one source row into its cells (the leading/trailing `|` are stripped, escaped pipes are kept literal). */
 function splitRow(line: string): string[] {
@@ -124,21 +161,82 @@ function readDelimiter(line: string): Array<{ align: "L" | "C" | "R" | "none"; d
 function formatDelimiter(spec: Array<{ align: "L" | "C" | "R" | "none"; dashes: number }>): string {
   return "| " + spec.map(({ align, dashes }) => {
     const d = "-".repeat(Math.max(3, dashes));
-    return align === "C" ? `:${d}:` : align === "L" ? `:${d}-` : align === "R" ? `-${d}:` : d;
+    return align === "C" ? `:${d}:` : align === "L" ? `:${d}` : align === "R" ? `${d}:` : d;
   }).join(" | ") + " |";
 }
 
 /** Find the Table source range and its lines (header + delimiter + body). */
 function readTableAt(state: EditorState, pos: number): { from: number; to: number; lines: string[] } | null {
-  let node: ReturnType<ReturnType<typeof syntaxTree>["resolveInner"]> | null = syntaxTree(state).resolveInner(pos, -1);
-  while (node && node.name !== "Table") node = node.parent;
-  if (!node) return null;
-  return { from: node.from, to: node.to, lines: state.doc.sliceString(node.from, node.to).split("\n") };
+  // A cursor at the table's very start or end belongs to it too: look to both sides.
+  for (const side of [-1, 1] as const) {
+    let node: ReturnType<ReturnType<typeof syntaxTree>["resolveInner"]> | null = syntaxTree(state).resolveInner(pos, side);
+    while (node && node.name !== "Table") node = node.parent;
+    if (node) return { from: node.from, to: node.to, lines: state.doc.sliceString(node.from, node.to).split("\n") };
+  }
+  return null;
 }
+
+/** Position inside the table being edited: the focused Atomic cell widget (focus lives in its contenteditable, not in the CM selection) or else the cursor. */
+function tablePos(view: EditorView): number {
+  const wrap = document.activeElement?.closest?.(".cm-atomic-table");
+  if (wrap && view.contentDOM.contains(wrap)) {
+    try { return view.posAtDOM(wrap) + 1; } catch { /* widget detached mid-update: fall back to the cursor */ }
+  }
+  return view.state.selection.main.head;
+}
+
+const isDelimiterRow = (s: string | undefined): s is string => !!s && /^\s*\|?(\s*:?-+:?\s*\|)+(\s*:?-+:?\s*)?$/.test(s);
+
+// Atomic's serializeTable rewrites every delimiter row to `| --- | --- |` on a cell edit; put the old row (alignment + width) back when the column count is unchanged.
+const keepTableAlignment = EditorState.transactionFilter.of((tr) => {
+  if (!tr.docChanged) return tr;
+  const fixes: { from: number; to: number; insert: string }[] = [];
+  tr.changes.iterChanges((fromA, toA, fromB, toB) => {
+    const before = tr.startState.doc.sliceString(fromA, toA).split("\n");
+    const after = tr.newDoc.sliceString(fromB, toB).split("\n");
+    if (before.length < 2 || after.length < 2 || !isDelimiterRow(before[1]) || !isDelimiterRow(after[1]) || before[1] === after[1]) return;
+    if (!/^\|( --- \|)+$/.test(after[1]) || splitRow(before[1]).length !== splitRow(after[1]).length) return;
+    const at = fromB + after[0]!.length + 1;
+    fixes.push({ from: at, to: at + after[1].length, insert: before[1] });
+  });
+  return fixes.length ? [tr, { changes: fixes, sequential: true }] : tr;
+});
+
+const ALIGN_CLASSES = { L: "cm-pn-align-left", C: "cm-pn-align-center", R: "cm-pn-align-right", none: "" } as const;
+const ALIGN_STYLE = { L: "left", C: "center", R: "right", none: "" } as const;
+
+// Atomic's table widget ignores the delimiter row; mirror alignment (and the dash count as min width) onto its cells.
+const tableAlignment = ViewPlugin.fromClass(
+  class {
+    obs: MutationObserver;
+    constructor(public view: EditorView) {
+      this.obs = new MutationObserver(() => this.apply());
+      this.obs.observe(view.contentDOM, { childList: true, subtree: true });
+      this.apply();
+    }
+    update(u: { docChanged: boolean }) { if (u.docChanged) this.view.requestMeasure({ read: () => null, write: () => this.apply() }); }
+    destroy() { this.obs.disconnect(); }
+    apply() {
+      for (const wrap of this.view.contentDOM.querySelectorAll<HTMLElement>(".cm-atomic-table")) {
+        let t: ReturnType<typeof readTableAt>;
+        try { t = readTableAt(this.view.state, this.view.posAtDOM(wrap) + 1); } catch { continue; }
+        if (!t || !isDelimiterRow(t.lines[1])) continue;
+        const spec = readDelimiter(t.lines[1]);
+        wrap.querySelectorAll("tr").forEach((tr) => tr.querySelectorAll<HTMLElement>("th, td").forEach((cell, i) => {
+          const s = spec[i];
+          cell.classList.remove(...Object.values(ALIGN_CLASSES).filter(Boolean));
+          if (s?.align && s.align !== "none") cell.classList.add(ALIGN_CLASSES[s.align]);
+          cell.style.textAlign = s ? ALIGN_STYLE[s.align] : "";
+          cell.style.minWidth = s ? `${s.dashes * 1.5}ch` : "";
+        }));
+      }
+    }
+  },
+);
 
 /** Apply a per-column transform (alignment / dashes) over the table under the cursor. */
 function applyDelimiterChange(view: EditorView, change: (spec: Array<{ align: "L" | "C" | "R" | "none"; dashes: number }>, headerLen: number) => Array<{ align: "L" | "C" | "R" | "none"; dashes: number }>): void {
-  const t = readTableAt(view.state, view.state.selection.main.head);
+  const t = readTableAt(view.state, tablePos(view));
   if (!t || t.lines.length < 2) return;
   const header = splitRow(t.lines[0]!);
   const newSpec = change(readDelimiter(t.lines[1]!), header.length);
@@ -166,16 +264,22 @@ const tableToolbar = ViewPlugin.fromClass(
       this.dom.setAttribute("role", "toolbar");
       this.dom.setAttribute("aria-label", "Tabelle");
       view.dom.parentElement!.appendChild(this.dom);
+      // Focus moves into the table widget's cells without a CM selection change; keep the toolbar in step.
+      view.contentDOM.addEventListener("focusin", this.onFocus);
+      view.contentDOM.addEventListener("focusout", this.onFocus);
       this.sync();
     }
+    onFocus = () => setTimeout(() => this.sync(), 0);
     update(update: { docChanged: boolean; selectionSet: boolean; viewportChanged: boolean; state: EditorState; view: EditorView }) {
       if (update.docChanged || update.selectionSet || update.viewportChanged) this.sync();
     }
-    destroy() { this.dom.remove(); }
+    destroy() {
+      this.view.contentDOM.removeEventListener("focusin", this.onFocus);
+      this.view.contentDOM.removeEventListener("focusout", this.onFocus);
+      this.dom.remove();
+    }
     private inTable(): boolean {
-      let n: ReturnType<ReturnType<typeof syntaxTree>["resolveInner"]> | null = syntaxTree(this.view.state).resolveInner(this.view.state.selection.main.head, -1);
-      while (n) { if (n.name === "Table") return true; n = n.parent; }
-      return false;
+      return !!readTableAt(this.view.state, tablePos(this.view));
     }
     private sync() {
       this.dom.style.display = this.inTable() ? "" : "none";
@@ -192,20 +296,20 @@ const tableToolbar = ViewPlugin.fromClass(
       };
       this.dom.append(
         mkBtn("⊕ Zeile", "Zeile unter der aktuellen einfügen", () => {
-          const t = readTableAt(v.state, v.state.selection.main.head); if (!t) return;
+          const t = readTableAt(v.state, tablePos(v)); if (!t) return;
           const header = splitRow(t.lines[0]!);
           const row = "| " + header.map(() => " ").join(" | ") + " |";
           v.dispatch({ changes: { from: t.to, insert: "\n" + row }, selection: { anchor: t.to + row.length - 1 } });
           v.focus();
         }),
         mkBtn("⊖ Zeile", "Letzte Zeile entfernen", () => {
-          const t = readTableAt(v.state, v.state.selection.main.head); if (!t || t.lines.length <= 3) return;
+          const t = readTableAt(v.state, tablePos(v)); if (!t || t.lines.length <= 3) return;
           const lastLineStart = t.to - t.lines[t.lines.length - 1]!.length;
           v.dispatch({ changes: { from: lastLineStart - 1, to: t.to } });
           v.focus();
         }),
         mkBtn("⊕ Spalte", "Spalte rechts einfügen", () => {
-          const t = readTableAt(v.state, v.state.selection.main.head); if (!t || t.lines.length < 2) return;
+          const t = readTableAt(v.state, tablePos(v)); if (!t || t.lines.length < 2) return;
           const header = splitRow(t.lines[0]!);
           const delim = readDelimiter(t.lines[1]!);
           const newHeader = [...header, "Spalte"];
@@ -221,7 +325,7 @@ const tableToolbar = ViewPlugin.fromClass(
           v.focus();
         }),
         mkBtn("⊖ Spalte", "Letzte Spalte entfernen", () => {
-          const t = readTableAt(v.state, v.state.selection.main.head); if (!t || t.lines.length < 2) return;
+          const t = readTableAt(v.state, tablePos(v)); if (!t || t.lines.length < 2) return;
           const header = splitRow(t.lines[0]!); if (header.length <= 1) return;
           const newHeader = header.slice(0, -1);
           const newDelim = readDelimiter(t.lines[1]!).slice(0, -1);
@@ -237,8 +341,8 @@ const tableToolbar = ViewPlugin.fromClass(
         mkBtn("⇤ L", "Spalten linksbündig ausrichten", () => applyDelimiterChange(v, (s) => s.map((c) => ({ ...c, align: "L" as const })))),
         mkBtn("⇔ C", "Spalten zentrieren", () => applyDelimiterChange(v, (s) => s.map((c) => ({ ...c, align: "C" as const })))),
         mkBtn("⇥ R", "Spalten rechtsbündig ausrichten", () => applyDelimiterChange(v, (s) => s.map((c) => ({ ...c, align: "R" as const })))),
-        mkBtn("◀", "Spaltenbreite verkleinern", () => applyDelimiterChange(v, (s) => s.map((c) => ({ ...c, dashes: Math.max(3, c.dashes - 2) })))),
-        mkBtn("▶", "Spaltenbreite vergrößern", () => applyDelimiterChange(v, (s) => s.map((c) => ({ ...c, dashes: c.dashes + 2 })))),
+        mkBtn("Breite −", "Spaltenbreite verkleinern", () => applyDelimiterChange(v, (s) => s.map((c) => ({ ...c, dashes: Math.max(3, c.dashes - 2) })))),
+        mkBtn("Breite +", "Spaltenbreite vergrößern", () => applyDelimiterChange(v, (s) => s.map((c) => ({ ...c, dashes: c.dashes + 2 })))),
       );
     }
   },
@@ -291,15 +395,13 @@ const fenceArrowExit = EditorView.domEventHandlers({
     if (!node) return false;
     const headLine = state.doc.lineAt(head);
     if (event.key === "ArrowDown") {
-      const lastLineEnd = state.doc.lineAt(node.to).to;
+      // Leave from the last body line already: the next ArrowDown would land on the closing fence, which is hidden once the cursor is "after" the block.
       const lastLineNo = state.doc.lineAt(node.to).number;
-      if (headLine.to !== lastLineEnd && headLine.number !== lastLineNo) return false;
-      const after = state.doc.sliceString(node.to, Math.min(state.doc.length, node.to + 2));
-      const insert = after.startsWith("\n\n") ? "" : "\n";
-      view.dispatch({
-        changes: { from: node.to, insert },
-        selection: { anchor: node.to + insert.length },
-      });
+      const closed = node.getChildren("CodeMark").length >= 2;
+      if (headLine.number < (closed ? lastLineNo - 1 : lastLineNo)) return false;
+      const next = node.to < state.doc.length ? state.doc.lineAt(node.to + 1) : null;
+      if (next && next.text === "") view.dispatch({ selection: { anchor: next.from } });
+      else view.dispatch({ changes: { from: node.to, insert: "\n" }, selection: { anchor: node.to + 1 } });
       event.preventDefault();
       return true;
     }
@@ -401,7 +503,7 @@ const emojiPlugin = ViewPlugin.fromClass(
   { decorations: (v) => v.decorations },
 );
 
-// shortcut: lezer-markdown's GFM extensions don't add sub/sup marks; we wrap `~x~` (single tilde, NOT `~~`) and `^x^` (caret) with mark decorations so the source stays editable. Anything that looks like `~~strike~~` or HTML `<sub>…</sub>` already renders via GFM.
+// shortcut: lezer-markdown's GFM extensions don't add sub/sup marks; we wrap `~x~` (single tilde, NOT `~~`) and `^x^` (caret) with mark decorations so the source stays editable. `~~strike~~` renders via GFM; HTML `<sub>x</sub>`/`<sup>x</sup>` has its tags hidden (Obsidian-style) while the cursor is outside.
 function buildSubSupDecos(view: EditorView): DecorationSet {
   const decos: Range<Decoration>[] = [];
   const text = view.state.doc.toString();
@@ -425,6 +527,18 @@ function buildSubSupDecos(view: EditorView): DecorationSet {
       const innerTo = innerFrom + m[1]!.length;
       decos.push(Decoration.mark({ class: cls }).range(innerFrom, innerTo));
     }
+  }
+  const htmlRe = /<(sub|sup)>([^<\n]+)<\/\1>/g;
+  let h: RegExpExecArray | null;
+  while ((h = htmlRe.exec(text))) {
+    const from = h.index;
+    const to = from + h[0].length;
+    if (selTouches(from, to) || inCodeSpan(view.state, from, to)) continue;
+    decos.push(
+      Decoration.replace({}).range(from, from + 5),
+      Decoration.mark({ class: h[1] === "sub" ? "cm-pn-sub" : "cm-pn-sup" }).range(from + 5, to - 6),
+      Decoration.replace({}).range(to - 6, to),
+    );
   }
   return Decoration.set(decos, true);
 }
@@ -560,6 +674,9 @@ export function insertTextAtCursor(view: EditorView, text: string): void {
 
 export const editorExtensions = [
   Prec.high(parser),
+  taskTyping,
+  Prec.highest(taskListInput),
+  Prec.highest(growFenceWithOpening),
   Prec.highest(plainEmphasisChars),
   Prec.highest(enterLeavesEmptyMarker),
   Prec.highest(leaveEmptyItemOrQuote),
@@ -571,5 +688,7 @@ export const editorExtensions = [
   pendingImageSrc,
   Prec.highest(attachmentPasteHandler),
   Prec.high(tableToolbar),
+  keepTableAlignment,
+  tableAlignment,
   atomicTables(), // keep Atomic's table widgets so cells render; our toolbar writes valid GFM that re-parses as Table.
 ];

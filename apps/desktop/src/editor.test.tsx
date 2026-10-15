@@ -327,4 +327,73 @@ describe("Table source preserves alignment on re-parse", () => {
     type(view, "");
     expect(doc(view)).toContain("---:");
   });
+  it("puts the alignment back when Atomic rewrites the table with a flat `---` delimiter row (cell edit)", () => {
+    const src = "| a | b |\n| :--- | ---: |\n| 1 | 2 |";
+    const view = mount(src);
+    view.dispatch({ changes: { from: 0, to: src.length, insert: "| a | b |\n| --- | --- |\n| 1Z | 2 |" } });
+    expect(doc(view)).toBe("| a | b |\n| :--- | ---: |\n| 1Z | 2 |");
+  });
+  it("does not invent alignment when the column count changed", () => {
+    const src = "| a | b |\n| :--- | ---: |\n| 1 | 2 |";
+    const view = mount(src);
+    view.dispatch({ changes: { from: 0, to: src.length, insert: "| a |\n| --- |\n| 1 |" } });
+    expect(doc(view)).toBe("| a |\n| --- |\n| 1 |");
+  });
+  it("mirrors the delimiter alignment onto the rendered cells", async () => {
+    const view = mount("| a | b | c |\n| :--- | :---: | ---: |\n| 1 | 2 | 3 |");
+    await new Promise((r) => setTimeout(r, 50)); // the MutationObserver applies it after the widget DOM lands
+    const cells = [...view.dom.querySelectorAll<HTMLElement>(".cm-atomic-table tbody td")];
+    expect(cells.map((c) => c.style.textAlign)).toEqual(["left", "center", "right"]);
+    expect(cells[1]!.classList.contains("cm-pn-align-center")).toBe(true);
+  });
+});
+
+describe("Task list typing", () => {
+  it.each([
+    ["- [", "- [ ] "],
+    ["- [ ", "- [ ] "],
+    ["- [ ]", "- [ ] "],
+    ["- [x]", "- [x] "],
+    ["- [X]", "- [x] "],
+    ["- [ ] a", "- [ ] a"],
+    ["1. [x] a", "1. [x] a"],
+  ])("typing %j gives %j and a TaskList node", (typed, expected) => {
+    const view = mount();
+    type(view, typed);
+    expect(doc(view)).toBe(expected);
+    expect(hasNode(view, "TaskMarker")).toBe(true);
+  });
+  it("a link at the start of a list item still types", () => {
+    const view = mount();
+    type(view, "- [a](u)");
+    expect(doc(view)).toBe("- [a](u)");
+    expect(hasNode(view, "TaskMarker")).toBe(false);
+  });
+  it("`[` mid-line or inside a code fence stays untouched", () => {
+    const view = mount();
+    type(view, "a - [");
+    expect(doc(view)).not.toContain("[ ]");
+    const fenced = mount("```\n- ");
+    type(fenced, "[");
+    expect(doc(fenced)).not.toContain("[ ]");
+  });
+});
+
+describe("HTML <sub>/<sup>", () => {
+  it("hides the tags and marks the content while the cursor is elsewhere", () => {
+    const view = mount("H<sub>2</sub>O x<sup>2</sup>\nende");
+    expect(view.dom.querySelector(".cm-pn-sub")?.textContent).toBe("2");
+    expect(view.dom.querySelector(".cm-pn-sup")?.textContent).toBe("2");
+    expect(view.dom.querySelector(".cm-line")?.textContent).toBe("H2O x2");
+    expect(doc(view)).toBe("H<sub>2</sub>O x<sup>2</sup>\nende");
+  });
+});
+
+describe("Fence typing", () => {
+  it("growing the opening fence to 4 backticks grows Atomic's auto-closed fence too", () => {
+    const view = mount();
+    type(view, "````");
+    expect(doc(view)).toBe("````\n````");
+    expect(hasNode(view, "FencedCode")).toBe(true);
+  });
 });

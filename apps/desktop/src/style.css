@@ -75,15 +75,19 @@ label { display: grid; gap: var(--space-1); font-weight: 500; }
 /* Code-fence hiding: the opening and closing ``` lines are invisible while the cursor is outside the block. */
 .cm-pn-fence-hidden { display: none; }
 
-/* Table toolbar: floats above the editor when the cursor sits inside a Table. */
+/* Table toolbar: a bar along the editor's bottom edge while a table has the cursor or cell focus. */
+.editor { position: relative; }
 .cm-pn-table-toolbar {
-  position: sticky;
-  top: 0;
+  position: absolute; /* the plugin appends it below the CM view, where .editor's overflow:hidden clips a flow/sticky bar */
+  bottom: 0;
+  left: 0;
+  right: 0;
   z-index: 10;
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   padding: 4px 6px;
-  border-bottom: 1px solid var(--line);
+  border-top: 1px solid var(--line);
   background: var(--surface);
   font-size: 12px;
 }
