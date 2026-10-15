@@ -22,6 +22,12 @@ vi.mock("@atomic-editor/editor", async () => {
   };
 });
 vi.mock("@atomic-editor/editor/styles.css", () => ({}));
+// whisperstorm falls through to the real browser fallback unless a test queues replies.
+const ws = vi.hoisted(() => ({ replies: [] as Array<Record<string, unknown>> }));
+vi.mock("./lib/tauri", async (orig) => {
+  const real = await orig<typeof import("./lib/tauri")>();
+  return { ...real, whisperstorm: (cmd: "start" | "stop" | "status") => (ws.replies.length ? Promise.resolve(ws.replies.shift()) : real.whisperstorm(cmd)) };
+});
 
 afterEach(() => (cleanup(), localStorage.clear()));
 let n = 0;
@@ -114,6 +120,19 @@ describe("CaptureView", () => {
     render(<CaptureView queue={new CaptureQueue(`c${n++}`)} send={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Sprache" }));
     await waitFor(() => expect(screen.getByRole("status").textContent).toBe("WhisperStorm läuft nicht"));
+    expect(screen.queryByRole("button", { name: "Stopp" })).toBeNull();
+  });
+
+  it.each([
+    ["empty", "", "Kein Text erkannt – nichts eingefügt."],
+    ["whitespace-only", " \n ", "Kein Text erkannt – nichts eingefügt."],
+    ["non-empty", "Hallo Welt", "Transkript eingefügt."],
+  ])("Sprache stop with %s transcript shows the matching message", async (_n, text, message) => {
+    ws.replies.push({ ok: true, phase: "recording" }, { ok: true, phase: "success", text });
+    render(<CaptureView queue={new CaptureQueue(`c${n++}`)} send={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Sprache" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Stopp" }));
+    await waitFor(() => expect(screen.getByRole("status").textContent).toBe(message));
     expect(screen.queryByRole("button", { name: "Stopp" })).toBeNull();
   });
 

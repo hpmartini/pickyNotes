@@ -108,11 +108,12 @@ export function CaptureView({ queue, send, screenshot }: Props) {
     if (recording) {
       try {
         const r = await whisperstorm("stop");
-        if (r.ok && r.text) {
+        const text = r.ok ? (r.text ?? "").trim() : "";
+        if (text) {
           const view = getView();
-          if (view) insertTextAtCursor(view, r.text);
+          if (view) insertTextAtCursor(view, text);
         }
-        setStatus(r.ok ? "Transkript eingefügt." : (r.error ?? "WhisperStorm Fehler"));
+        setStatus(!r.ok ? (r.error ?? "WhisperStorm Fehler") : text ? "Transkript eingefügt." : "Kein Text erkannt – nichts eingefügt.");
       } catch (e) {
         setStatus(e instanceof Error ? e.message : String(e));
       }
