@@ -177,20 +177,26 @@ describe("capture pipeline", () => {
     expect(await readFile(path.join(root, `raw/${first.id}.md`), "utf8")).not.toContain("pending:");
   });
 
-  it("text with attachments: ids that differ only by '-' placement or sanitized characters never share a file", async () => {
+  it("text with attachments: ids that differ only by '-' placement or '-' vs '_' never share a file; both links are rewritten and distinct", async () => {
     const att = (attId: string, name: string, s: string) => ({ id: attId, name, mime: "application/octet-stream", data: Buffer.from(s).toString("base64") });
-    for (const [first, second] of [[att("a", "b-file.pdf", "AAA"), att("a-b", "file.pdf", "BBB")], [att("a.b", "f.bin", "AAA"), att("a_b", "f.bin", "BBB")]] as const) {
-      // "." is not in the pending-link charset, so check the stored files rather than the rewritten links.
+    for (const [first, second] of [[att("a", "b-file.pdf", "AAA"), att("a-b", "file.pdf", "BBB")], [att("a_b", "f.bin", "AAA"), att("a-b", "f.bin", "BBB")]] as const) {
       const text = `[1](pending:${first.id}) [2](pending:${second.id})`;
       const { id } = (await (await post("/captures", { kind: "text", source: "typed", text, attachments: [first, second] })).json()) as { id: string };
-      const files = (await readdir(path.join(root, "raw/attachments"))).filter((f) => f.startsWith(id));
-      expect(files).toHaveLength(2);
-      expect((await Promise.all(files.map((f) => readFile(path.join(root, "raw/attachments", f), "utf8")))).sort()).toEqual(["AAA", "BBB"]);
-      if (/^[\w-]+$/.test(first.id + second.id)) { // links were rewritten: two distinct targets, one per file
-        const note = await readFile(path.join(root, `raw/${id}.md`), "utf8");
-        for (const f of files) expect(note).toContain(`raw/attachments/${f}`);
-      }
+      const note = await readFile(path.join(root, `raw/${id}.md`), "utf8");
+      const links = [...note.matchAll(/\[[12]\]\(([^)]+)\)/g)].map((m) => m[1]!);
+      expect(links).toEqual([`raw/attachments/${id}-${hid(first.id)}-${first.name}`, `raw/attachments/${id}-${hid(second.id)}-${second.name}`]);
+      expect(new Set(links).size).toBe(2);
+      expect(await readFile(path.join(root, links[0]!), "utf8")).toBe("AAA");
+      expect(await readFile(path.join(root, links[1]!), "utf8")).toBe("BBB");
     }
+  });
+
+  it("text with attachments: an id outside [A-Za-z0-9_-] is rejected and nothing is stored", async () => {
+    for (const badId of ["a.b", "a/b", "../x", "a b"]) {
+      const a = { id: badId, name: "f.bin", mime: "application/octet-stream", data: Buffer.from("x").toString("base64") };
+      expect((await post("/captures", { kind: "text", source: "typed", text: "[f](pending:x)", attachments: [a] })).status).toBe(400);
+    }
+    expect(existsSync(path.join(root, "raw/attachments"))).toBe(false);
   });
 
   it("text with attachments: a repeated attachment id is rejected and nothing is stored", async () => {

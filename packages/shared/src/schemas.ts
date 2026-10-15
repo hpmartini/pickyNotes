@@ -6,7 +6,8 @@ export const CaptureSource = z.enum(["typed", "dictated", "imported"]);
 
 /** A file attached to a text capture (image or document dropped/picked at the cursor). The server rewrites `pending:<id>` links in the body to vault-relative attachment paths. */
 export const CaptureAttachment = z.object({
-  id: z.string().min(1).max(100),
+  /** Same charset as the `pending:<id>` link pattern, so every attachment can be rewritten (and nothing path-like gets through). */
+  id: z.string().regex(/^[a-zA-Z0-9_-]{1,100}$/),
   name: z.string().min(1).max(255),
   mime: z.string().min(1).max(100),
   /** Base64 payload. */
