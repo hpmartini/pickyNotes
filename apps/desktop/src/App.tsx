@@ -23,7 +23,7 @@ export function App() {
 
   useEffect(() => {
     registerHotkey().catch(console.error);
-    // Here, not in CaptureView: it is unmounted on the other tabs and would miss the event.
+    // Here, not in CaptureView: only App can switch the tab. CaptureView stays mounted so a running recording survives tab switches.
     const onHotkey = (e: Event) => (setTab("capture"), setHotkey({ toggle: !!(e as CustomEvent).detail?.toggle }));
     window.addEventListener("picky:focus-capture", onHotkey);
     const flush = () => void queue.flush(send).catch(() => {});
@@ -42,7 +42,7 @@ export function App() {
           </button>
         ))}
       </nav>
-      {tab === "capture" && <CaptureView queue={queue} send={send} screenshot={screenshot} hotkey={hotkey} onHotkeyHandled={() => setHotkey(null)} />}
+      <CaptureView queue={queue} send={send} screenshot={screenshot} hotkey={hotkey} onHotkeyHandled={() => setHotkey(null)} hidden={tab !== "capture"} />
       {tab === "search" && <SearchView search={async (q) => (await (await client()).search(q)).hits} />}
       {tab === "settings" && <Settings />}
     </main>

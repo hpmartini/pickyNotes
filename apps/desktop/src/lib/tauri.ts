@@ -37,13 +37,13 @@ export async function whisperstorm(cmd: "start" | "stop" | "status"): Promise<Wh
 
 /**
  * Global hotkeys, both bring the capture window to the front and fire `picky:focus-capture` (detail.toggle).
- * Ctrl+Alt+Space also toggles dictation (first press starts, second stops); it differs from WhisperStorm's Option+Space push-to-talk.
+ * Ctrl+Alt+V also toggles dictation (first press starts, second stops); it avoids macOS Ctrl+Alt+Space (input-source switch) and WhisperStorm's Option+Space push-to-talk.
  * A key another app already owns is logged and skipped, never thrown.
  */
 export async function registerHotkey(): Promise<void> {
   if (!inTauri()) return;
   const [{ register, isRegistered }, { getCurrentWindow }] = await Promise.all([import("@tauri-apps/plugin-global-shortcut"), import("@tauri-apps/api/window")]);
-  for (const [shortcut, toggle] of [["CommandOrControl+Shift+Space", false], ["Control+Alt+Space", true]] as const) {
+  for (const [shortcut, toggle] of [["CommandOrControl+Shift+Space", false], ["Control+Alt+V", true]] as const) {
     try {
       if (await isRegistered(shortcut)) continue;
       await register(shortcut, async (e) => {

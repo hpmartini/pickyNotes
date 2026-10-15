@@ -291,6 +291,7 @@ test("speech: the global hotkey event focuses the editor and toggles dictation (
   await press();
   await expect(page.getByRole("button", { name: "Stopp" })).toBeVisible();
   await expect(page.locator(".cm-content")).toBeFocused();
+  await page.getByRole("button", { name: "Suche" }).click(); // the recording must survive a tab switch
   await press();
   await expect(page.getByRole("status")).toHaveText("Transkript eingefügt.");
   await expect.poll(() => getDraft(page)).toContain("Hallo Hotkey");

@@ -1,7 +1,8 @@
 import "fake-indexeddb/auto";
 import { ApiError } from "@pickynotes/shared";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { App } from "./App";
 import { CaptureView } from "./CaptureView";
 import { CaptureQueue } from "./lib/queue";
 
@@ -219,6 +220,18 @@ describe("CaptureView", () => {
       press(true);
       await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Transkript eingefügt."));
       expect(screen.getByRole("button", { name: "Sprache" })).toBeTruthy();
+      expect(ws.calls).toEqual(["start", "stop"]);
+    });
+
+    it("a recording started by the hotkey is stopped by the next hotkey after a tab switch", async () => {
+      ws.replies.push({ ok: true, phase: "recording" }, { ok: true, phase: "success", text: "Hallo" });
+      render(<App />);
+      const press = () => act(() => void window.dispatchEvent(new CustomEvent("picky:focus-capture", { detail: { toggle: true } })));
+      press();
+      expect(await screen.findByRole("button", { name: "Stopp" })).toBeTruthy();
+      fireEvent.click(screen.getByRole("button", { name: "Suche" }));
+      press();
+      await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Transkript eingefügt."));
       expect(ws.calls).toEqual(["start", "stop"]);
     });
 

@@ -34,9 +34,11 @@ interface Props {
   /** Global hotkey request: focus the editor, and start/stop dictation when `toggle`. */
   hotkey?: { toggle: boolean } | null;
   onHotkeyHandled?: () => void;
+  /** Not the active tab: stays mounted (recording state survives) but invisible. */
+  hidden?: boolean;
 }
 
-export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled }: Props) {
+export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled, hidden }: Props) {
   const [text, setText] = useState(loadDraft);
   useEffect(() => saveDraft(text), [text]);
   const textRef = useRef(text);
@@ -176,7 +178,7 @@ export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled }
   const extensions = useMemo(() => editorExtensions, []);
 
   return (
-    <section aria-label="Erfassen">
+    <section aria-label="Erfassen" hidden={hidden}>
       <div className="editor">
         <AtomicCodeMirrorEditor
           documentId={`capture-${docId}`}

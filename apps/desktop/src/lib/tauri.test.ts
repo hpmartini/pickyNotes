@@ -13,7 +13,7 @@ vi.mock("@tauri-apps/plugin-global-shortcut", () => ({
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => win }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
-const CTRL_ALT = "Control+Alt+Space";
+const CTRL_ALT = "Control+Alt+V";
 const CMD_SHIFT = "CommandOrControl+Shift+Space";
 
 describe("registerHotkey", () => {
