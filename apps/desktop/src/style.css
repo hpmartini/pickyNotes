@@ -63,3 +63,6 @@ label { display: grid; gap: var(--space-1); font-weight: 500; }
 
 /* narrow windows: stack the action row, never scroll sideways */
 @media (max-width: 480px) { .actions .status { flex-basis: 100%; margin-left: 0; } main { padding: var(--space-2) var(--space-3) var(--space-3); } }
+
+/* Obsidian-style :shortcode: emoji replacement; the actual character is set by the JS widget */
+.cm-pn-emoji { font-style: normal; }

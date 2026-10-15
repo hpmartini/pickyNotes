@@ -211,3 +211,31 @@ describe("Obsidian/Notion parity (src/lib/editor.ts)", () => {
     expect(doc(view)).toBe("- a\n```\n-\n```");
   });
 });
+
+// :shortcode: is not in lezer-markdown's GFM; the editor renders known ones as Unicode via a ViewPlugin.
+describe("Emoji shortcode :name: -> Unicode glyph", () => {
+  it.each([
+    [":joy:", "😂"],
+    [":rocket:", "🚀"],
+    [":check:", "✅"],
+    [":warning:", "⚠"],
+  ])("renders %s as %s, keeps source intact", (shortcode, glyph) => {
+    const view = mount(`a ${shortcode} b`);
+    expect(doc(view)).toBe(`a ${shortcode} b`);
+    const widget = view.dom.querySelector(`.cm-pn-emoji`);
+    expect(widget, `expected one .cm-pn-emoji widget for ${shortcode}`).not.toBeNull();
+    expect(widget!.textContent).toBe(glyph);
+  });
+  it("unknown shortcodes keep the source and render the literal text", () => {
+    const view = mount(":nonsense:");
+    expect(doc(view)).toBe(":nonsense:");
+    const widget = view.dom.querySelector(".cm-pn-emoji");
+    expect(widget).not.toBeNull();
+    expect(widget!.textContent).toBe(":nonsense:");
+  });
+  it("multiple shortcodes on one line render independently", () => {
+    const view = mount(":joy: and :rocket:");
+    const widgets = [...view.dom.querySelectorAll(".cm-pn-emoji")];
+    expect(widgets.map((w) => w.textContent)).toEqual(["😂", "🚀"]);
+  });
+});

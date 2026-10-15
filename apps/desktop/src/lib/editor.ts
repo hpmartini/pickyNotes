@@ -3,7 +3,7 @@ import { indentLess } from "@codemirror/commands";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { syntaxTree } from "@codemirror/language";
 import { type EditorState, Prec } from "@codemirror/state";
-import { EditorView, keymap } from "@codemirror/view";
+import { Decoration, type DecorationSet, EditorView, keymap, MatchDecorator, ViewPlugin, WidgetType } from "@codemirror/view";
 
 // shortcut: duplicates Atomic Editor's internal markdown({base: markdownLanguage, extensions: [highlightMarkdown]}) to add {remove: ["SetextHeading"]}; Prec.high wins over the built-in language facet; drop once Atomic Editor accepts lezer extensions.
 const parser = markdown({ base: markdownLanguage, extensions: [highlightMarkdown, { remove: ["SetextHeading"] }] }).language;
@@ -81,9 +81,66 @@ const enterLeavesEmptyMarker = EditorView.domEventHandlers({
   },
 });
 
+// shortcut: GFM (the parser base) does not tokenise `:shortcode:`; render the few common ones Obsidian/Notion show so the source stays editable. Drop when lezer-markdown gains an emoji node.
+const EMOJI: Record<string, string> = {
+  ":joy:": "😂",
+  ":smile:": "😄",
+  ":grin:": "😀",
+  ":laughing:": "😆",
+  ":wink:": "😉",
+  ":heart:": "❤",
+  ":rocket:": "🚀",
+  ":fire:": "🔥",
+  ":tada:": "🎉",
+  ":thumbsup:": "👍",
+  ":thumbsdown:": "👎",
+  ":star:": "⭐",
+  ":check:": "✅",
+  ":x:": "❌",
+  ":warning:": "⚠",
+  ":bulb:": "💡",
+  ":memo:": "📝",
+  ":calendar:": "📅",
+  ":link:": "🔗",
+  ":lock:": "🔒",
+  ":key:": "🔑",
+};
+const EMOJI_RE = /:[a-zA-Z]+:/g;
+
+class EmojiWidget extends WidgetType {
+  constructor(readonly text: string) { super(); }
+  toDOM() {
+    const span = document.createElement("span");
+    span.className = "cm-pn-emoji";
+    span.textContent = EMOJI[this.text] ?? this.text;
+    return span;
+  }
+  ignoreEvent() { return true; }
+  eq(other: EmojiWidget) { return other.text === this.text; }
+}
+
+const emojiDecorator = new MatchDecorator({
+  regexp: EMOJI_RE,
+  decoration: (m) => Decoration.replace({ widget: new EmojiWidget(m[0]) }),
+});
+
+const emojiPlugin = ViewPlugin.fromClass(
+  class {
+    decorations: DecorationSet;
+    constructor(view: EditorView) {
+      this.decorations = emojiDecorator.createDeco(view);
+    }
+    update(update: { docChanged: boolean; viewportChanged: boolean; changes: unknown; state: EditorState }) {
+      this.decorations = emojiDecorator.updateDeco(update as never, this.decorations);
+    }
+  },
+  { decorations: (v) => v.decorations },
+);
+
 export const editorExtensions = [
   Prec.high(parser),
   Prec.highest(plainEmphasisChars),
   Prec.highest(enterLeavesEmptyMarker),
   Prec.highest(leaveEmptyItemOrQuote),
+  emojiPlugin,
 ];
