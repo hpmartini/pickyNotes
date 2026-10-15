@@ -125,20 +125,20 @@ describe("CaptureView", () => {
     expect(await getAttachment(still.id)).toBeDefined();
   });
 
-  it("Sprache without a running WhisperStorm shows a clear message and does not switch to Stopp", async () => {
+  it("STT without a running WhisperStorm shows a clear message and does not switch to Stopp", async () => {
     render(<CaptureView queue={new CaptureQueue(`c${n++}`)} send={vi.fn()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Sprache" }));
+    fireEvent.click(screen.getByRole("button", { name: "STT" }));
     await waitFor(() => expect(screen.getByRole("status").textContent).toBe("WhisperStorm läuft nicht"));
     expect(screen.queryByRole("button", { name: "Stopp" })).toBeNull();
   });
 
-  it("Sprache shows a pending state and disables the button while start is running", async () => {
+  it("STT shows a pending state and disables the button while start is running", async () => {
     let reply!: (r: unknown) => void;
     ws.replies.push(new Promise((res) => (reply = res)) as never);
     render(<CaptureView queue={new CaptureQueue(`c${n++}`)} send={vi.fn()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Sprache" }));
+    fireEvent.click(screen.getByRole("button", { name: "STT" }));
     await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Starte Aufnahme…"));
-    expect((screen.getByRole("button", { name: "Sprache" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "STT" }) as HTMLButtonElement).disabled).toBe(true);
     reply({ ok: true, phase: "recording" });
     expect(await screen.findByRole("button", { name: "Stopp" })).toBeTruthy();
     expect(screen.getByRole("status").textContent).toBe("");
@@ -148,10 +148,10 @@ describe("CaptureView", () => {
     ["empty", "", "Kein Text erkannt – nichts eingefügt."],
     ["whitespace-only", " \n ", "Kein Text erkannt – nichts eingefügt."],
     ["non-empty", "Hallo Welt", "Transkript eingefügt."],
-  ])("Sprache stop with %s transcript shows the matching message", async (_n, text, message) => {
+  ])("STT stop with %s transcript shows the matching message", async (_n, text, message) => {
     ws.replies.push({ ok: true, phase: "recording" }, { ok: true, phase: "success", text });
     render(<CaptureView queue={new CaptureQueue(`c${n++}`)} send={vi.fn()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Sprache" }));
+    fireEvent.click(screen.getByRole("button", { name: "STT" }));
     fireEvent.click(await screen.findByRole("button", { name: "Stopp" }));
     await waitFor(() => expect(screen.getByRole("status").textContent).toBe(message));
     expect(screen.queryByRole("button", { name: "Stopp" })).toBeNull();
@@ -219,7 +219,7 @@ describe("CaptureView", () => {
       expect(await screen.findByRole("button", { name: "Stopp" })).toBeTruthy();
       press(true);
       await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Transkript eingefügt."));
-      expect(screen.getByRole("button", { name: "Sprache" })).toBeTruthy();
+      expect(screen.getByRole("button", { name: "STT" })).toBeTruthy();
       expect(ws.calls).toEqual(["start", "stop"]);
     });
 

@@ -190,7 +190,7 @@ export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled, 
       </div>
       <div className="actions">
         <button className="primary" onClick={sendText} disabled={!text.trim()}>Speichern</button>
-        <button onClick={toggleRecording} aria-pressed={recording} disabled={starting}>{recording ? "Stopp" : "Sprache"}</button>
+        <button onClick={toggleRecording} title="Speech-to-Text (Ctrl+Alt+V)" aria-pressed={recording} disabled={starting}>{recording ? "Stopp" : "STT"}</button>
         {screenshot && <button onClick={takeScreenshot}>Screenshot</button>}
         <label className="button">
           Datei

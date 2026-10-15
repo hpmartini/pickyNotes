@@ -270,12 +270,12 @@ async function mockTauri(page: Page, ws: { start: unknown; stop?: unknown }) {
   }, [ws, PNG_B64] as const);
 }
 
-test("speech: Sprache starts WhisperStorm, Stopp inserts the transcript at the cursor", async ({ page }) => {
+test("speech: STT starts WhisperStorm, Stopp inserts the transcript at the cursor", async ({ page }) => {
   await mockTauri(page, { start: { ok: true, phase: "recording" }, stop: { ok: true, phase: "idle", text: "Hallo Welt" } });
   await page.goto("/");
   await page.locator(".cm-content").click();
   await steps(page, "speech", [..."vor"]);
-  await page.getByRole("button", { name: "Sprache" }).click();
+  await page.getByRole("button", { name: "STT" }).click();
   await page.getByRole("button", { name: "Stopp" }).click();
   await expect(page.getByRole("status")).toHaveText("Transkript eingefügt.");
   await expect.poll(() => getDraft(page)).toBe("vor\nHallo Welt");
@@ -303,7 +303,7 @@ test("speech: a missing WhisperStorm shows the error and leaves the draft alone"
   await page.goto("/");
   await page.locator(".cm-content").click();
   await steps(page, "speech-err", [..."vor"]);
-  await page.getByRole("button", { name: "Sprache" }).click();
+  await page.getByRole("button", { name: "STT" }).click();
   await expect(page.getByRole("status")).toHaveText("WhisperStorm läuft nicht (kein Socket)");
   await expect(page.getByRole("button", { name: "Stopp" })).toHaveCount(0);
   expect(await getDraft(page)).toBe("vor");
