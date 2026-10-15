@@ -8,6 +8,8 @@ export interface Instruction {
   text: string;
 }
 
+export const EXTRACT_SECTION = /<!-- extract:[^\n]*? -->[\s\S]*?<!-- \/extract -->/g;
+
 const strip = (body: string, start: string, end: string) => {
   const s = body.indexOf(start);
   const e = body.indexOf(end);
@@ -22,7 +24,8 @@ export const mentionsClaude = (body: string) => /(^|\s)@claude\b/i.test(body);
  * quoted lines are excluded so results never trigger new instructions. Ids are derived from noteId + instruction hash.
  */
 export function parseInstructions(body: string, noteId: string): Instruction[] {
-  const own = strip(strip(body, CLAUDE_START, CLAUDE_END), SUMMARY_START, SUMMARY_END);
+  // Text the server extracted from attachments (jobs.ts "extract-inline") is not the user's own input either.
+  const own = strip(strip(body, CLAUDE_START, CLAUDE_END), SUMMARY_START, SUMMARY_END).replace(EXTRACT_SECTION, "");
   const out = new Map<string, Instruction>();
   const lines = own.split("\n");
   for (let i = 0; i < lines.length; i++) {

@@ -99,9 +99,10 @@ export const handlers: Record<JobName, (deps: Deps, p: Payload) => Promise<void>
     if (!note) return;
     const marker = `<!-- extract:${p.attachment} -->`;
     if ((await deps.vault.read(note.path)).body.includes(marker)) return;
-    const text = await extractText(deps, p);
+    // "<!--" is neutralised so the extracted text cannot close its own section (parseInstructions skips those sections: an image saying "@claude ..." must not run).
+    const text = (await extractText(deps, p)).replaceAll("<!--", "&lt;!--");
     // Re-checked inside the compare-before-write loop: a concurrent duplicate job must not append twice. The marker is not a picky block, so stripPickyBlocks keeps the text indexed.
-    const file = await patchNote(deps, note.path, (f) => (f.body.includes(marker) ? {} : { appendBody: `${marker}\n${text}` }));
+    const file = await patchNote(deps, note.path, (f) => (f.body.includes(marker) ? {} : { appendBody: `${marker}\n${text}\n<!-- /extract -->` }));
     await syncRow(deps, file);
     await deps.queue.send("embed", { noteId: p.noteId });
   },
