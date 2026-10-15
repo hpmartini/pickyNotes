@@ -45,7 +45,7 @@ const leaveEmptyMarker = (view: EditorView): boolean => {
   const inQuote = !!quoteMatch && inside(state, head, "Blockquote");
   if (!inList && !inQuote) return false;
   // Indented list marker: outdent one level (Shift+Tab equivalent) and keep going; the next Enter on the resulting top-level empty marker clears it with a blank separator below.
-  if (inList && listMatch![1]) return indentLess(view);
+  if (inList && listMatch![1]) return /^\s*\d/.test(line.text) ? orderedListIndent(-1)(view) : indentLess(view);
   // Top level (or any quote): replace the marker line so the cursor lands on a fresh empty line after a blank separator, which stops the next typed text from lazy-continuing the previous item/quote.
   const prev = line.from > 0 ? state.doc.lineAt(line.from - 1) : null;
   const needsBlank = prev ? /\S/.test(prev.text) : false;
@@ -67,7 +67,30 @@ const plainEmphasisChars = EditorView.inputHandler.of((view, from, to, text) => 
   return true;
 });
 
+// Tab/Shift-Tab on an ordered item must move by the marker width ("1. " = 3 columns): Atomic's 2-space step leaves `  3. c` as a sibling, not a nested list.
+// A first item at the new depth restarts at 1 (Obsidian/Notion); outdent keeps the number.
+const orderedListIndent = (dir: 1 | -1) => (view: EditorView): boolean => {
+  const { state } = view;
+  const { head, empty } = state.selection.main;
+  const line = state.doc.lineAt(head);
+  const m = /^(\s*)(\d+)[.)]\s/.exec(line.text);
+  if (!empty || !m || !inside(state, head, "ListItem")) return false;
+  const width = m[2]!.length + 2;
+  if (dir === -1) {
+    if (!m[1]) return false;
+    view.dispatch({ changes: { from: line.from, to: line.from + Math.min(m[1].length, width) }, userEvent: "delete.dedent" });
+    return true;
+  }
+  const prev = line.number > 1 ? /^(\s*)(?:[-*+]|\d+[.)])\s/.exec(state.doc.line(line.number - 1).text) : null;
+  const first = !prev || prev[1]!.length < m[1]!.length + width;
+  const num = line.from + m[1]!.length;
+  view.dispatch({ changes: [{ from: line.from, insert: " ".repeat(width) }, ...(first ? [{ from: num, to: num + m[2]!.length, insert: "1" }] : [])], userEvent: "input.indent" });
+  return true;
+};
+
 const leaveEmptyItemOrQuote = keymap.of([
+  { key: "Tab", run: orderedListIndent(1) },
+  { key: "Shift-Tab", run: orderedListIndent(-1) },
   // Backspace on an empty bullet/number/task marker drops the whole marker, also directly under a paragraph where Lezer sees no ListItem (markdown's default leaves indent spaces that nest the next list).
   { key: "Backspace", run: clearEmptyMarker(emptyListMarker) },
 ]);
@@ -78,6 +101,32 @@ const enterLeavesEmptyMarker = EditorView.domEventHandlers({
     if (event.key !== "Enter" || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return false;
     if (!leaveEmptyMarker(view)) return false;
     event.preventDefault();
+    return true;
+  },
+});
+
+// Typing a table by hand breaks in Atomic: the moment header + delimiter row parse as a Table its block widget swallows the cursor line and further keystrokes are lost.
+// So Enter at the end of a pipe row (not already in a table) builds the skeleton (`| --- |` + one empty body row) and moves the caret into the first body cell, like Obsidian's table helpers.
+const enterBuildsTable = EditorView.domEventHandlers({
+  keydown(event, view) {
+    if (event.key !== "Enter" || event.shiftKey || event.ctrlKey || event.metaKey || event.altKey || event.isComposing) return false;
+    const { state } = view;
+    const { head, empty } = state.selection.main;
+    const line = state.doc.lineAt(head);
+    if (!empty || head !== line.to || !/^\|.*\|\s*$/.test(line.text) || (line.number > 1 && state.doc.line(line.number - 1).text.trimStart().startsWith("|"))) return false;
+    if (!inside(state, head) || readTableAt(state, head)) return false;
+    const cols = splitRow(line.text).length;
+    if (cols < 2) return false;
+    const skeleton = `\n| ${Array(cols).fill("---").join(" | ")} |\n| ${Array(cols).fill("").join(" | ")} |`;
+    view.dispatch({ changes: { from: line.to, insert: skeleton }, selection: { anchor: line.from }, userEvent: "input" });
+    event.preventDefault();
+    // The widget is built by the dispatch above; its first body cell takes the keyboard from here.
+    setTimeout(() => {
+      for (const wrap of view.contentDOM.querySelectorAll<HTMLElement>(".cm-atomic-table")) {
+        try { if (view.posAtDOM(wrap) !== line.from) continue; } catch { continue; }
+        wrap.querySelector<HTMLElement>("tbody .cm-atomic-table-cell-source")?.focus();
+      }
+    }, 0);
     return true;
   },
 });
@@ -511,9 +560,10 @@ function buildSubSupDecos(view: EditorView): DecorationSet {
   // `touches` = the cursor sits inside the visible span [from, to). Cursor at `to` is *after* it (typing appends), so we use `>=` for `from` and `<` for `to`.
   const selTouches = (from: number, to: number) => head.empty ? head.head >= from && head.head < to : head.to > from && head.from < to;
   // `~x~` — NOT `~~x~~`. The lookbehind/lookahead reject a second `~` so we don't shade strikethrough.
-  const subRe = /(?<!~)~([^\s~][^~]*?[^\s~]|[^\s~])~(?!~)/g;
+  // No whitespace inside (Markdown Guide: H~2~O, X^2^): otherwise `[^1] … [^2]` or two stray carets would shade whole paragraphs.
+  const subRe = /(?<!~)~([^\s~]+)~(?!~)/g;
   // `^x^` — single caret.
-  const supRe = /(?<!\^)\^([^\s^][^^]*?[^\s^]|[^\s^])\^(?!\^)/g;
+  const supRe = /(?<![\^[])\^([^\s^]+)\^(?!\^)/g;
   for (const [re, cls] of [[subRe, "cm-pn-sub"], [supRe, "cm-pn-sup"]] as const) {
     re.lastIndex = 0;
     let m: RegExpExecArray | null;
@@ -522,26 +572,98 @@ function buildSubSupDecos(view: EditorView): DecorationSet {
       const to = from + m[0]!.length;
       if (selTouches(from, to)) continue;
       if (inCodeSpan(view.state, from, to)) continue;
-      // Wrap only the inner content (group 1) so the tildes/carets stay visible in source.
-      const innerFrom = from + m[0]!.indexOf(m[1]!);
-      const innerTo = innerFrom + m[1]!.length;
-      decos.push(Decoration.mark({ class: cls }).range(innerFrom, innerTo));
+      // Hide the single `~`/`^` delimiters (cursor elsewhere) and lower/raise the content.
+      decos.push(Decoration.replace({}).range(from, from + 1), Decoration.mark({ class: cls }).range(from + 1, to - 1), Decoration.replace({}).range(to - 1, to));
     }
   }
-  const htmlRe = /<(sub|sup)>([^<\n]+)<\/\1>/g;
+  const htmlRe = new RegExp(`<(${Object.keys(HTML_INLINE).join("|")})>([^<\\n]+)</\\1>`, "g");
   let h: RegExpExecArray | null;
   while ((h = htmlRe.exec(text))) {
     const from = h.index;
     const to = from + h[0].length;
     if (selTouches(from, to) || inCodeSpan(view.state, from, to)) continue;
+    const open = from + h[1]!.length + 2;
+    const close = to - h[1]!.length - 3;
     decos.push(
-      Decoration.replace({}).range(from, from + 5),
-      Decoration.mark({ class: h[1] === "sub" ? "cm-pn-sub" : "cm-pn-sup" }).range(from + 5, to - 6),
-      Decoration.replace({}).range(to - 6, to),
+      Decoration.replace({}).range(from, open),
+      Decoration.mark({ class: HTML_INLINE[h[1]!]! }).range(open, close),
+      Decoration.replace({}).range(close, to),
     );
   }
   return Decoration.set(decos, true);
 }
+
+// Inline HTML (markdownguide "hacks" / basic syntax): tags are hidden while the cursor is elsewhere and the content is styled.
+const HTML_INLINE: Record<string, string> = {
+  sub: "cm-pn-sub", sup: "cm-pn-sup", b: "cm-pn-html-b", strong: "cm-pn-html-b", i: "cm-pn-html-i", em: "cm-pn-html-i",
+  u: "cm-pn-html-u", ins: "cm-pn-html-u", s: "cm-pn-html-s", del: "cm-pn-html-s", mark: "cm-pn-html-mark", kbd: "cm-pn-html-kbd",
+};
+
+const ENTITY: Record<string, string> = {
+  "&nbsp;": " ", "&ensp;": " ", "&emsp;": " ", "&amp;": "&", "&lt;": "<", "&gt;": ">", "&quot;": '"',
+  "&copy;": "©", "&reg;": "®", "&hellip;": "…", "&mdash;": "—", "&ndash;": "–",
+};
+
+class GlyphWidget extends WidgetType {
+  constructor(readonly source: string, readonly glyph: string, readonly cls: string) { super(); }
+  toDOM() {
+    const span = document.createElement("span");
+    span.className = this.cls;
+    span.textContent = this.glyph;
+    return span;
+  }
+  eq(other: GlyphWidget) { return other.source === this.source && other.cls === this.cls; }
+  ignoreEvent() { return true; }
+}
+
+// shortcut: lezer GFM has no node for footnotes, definition lists, heading ids or HTML entities; per-line regexes over the doc (not fences/code) are enough for a capture editor. Footnote refs and entities become glyph widgets while the cursor is elsewhere; the rest only get classes.
+function buildExtraDecos(view: EditorView): DecorationSet {
+  const { state } = view;
+  const decos: Range<Decoration>[] = [];
+  const sel = state.selection.main;
+  const touches = (from: number, to: number) => (sel.empty ? sel.head >= from && sel.head < to : sel.to > from && sel.from < to);
+  const line = (cls: string, at: number) => decos.push(Decoration.line({ attributes: { class: cls } }).range(at));
+  const entityRe = new RegExp(Object.keys(ENTITY).join("|"), "g");
+  for (let n = 1; n <= state.doc.lines; n++) {
+    const l = state.doc.line(n);
+    if (!l.text || !inside(state, l.from)) continue;
+    let m: RegExpExecArray | null;
+    if ((m = /^\[\^([^\]\s]+)\]:\s/.exec(l.text))) {
+      line("cm-pn-footnote-def", l.from);
+      decos.push(Decoration.mark({ class: "cm-pn-footnote-label" }).range(l.from, l.from + m[0].length - 1));
+    } else if (/^:\s+\S/.test(l.text) && n > 1 && state.doc.line(n - 1).text.trim()) {
+      line("cm-pn-dl-def", l.from);
+      const prev = state.doc.line(n - 1);
+      if (!prev.text.startsWith(":")) line("cm-pn-dl-term", prev.from);
+    } else if ((m = /^#{1,6}\s.*?(\{#[\w-]+\})\s*$/.exec(l.text))) {
+      const at = l.from + l.text.lastIndexOf(m[1]!);
+      decos.push(Decoration.mark({ class: "cm-pn-heading-id" }).range(at, at + m[1]!.length));
+    }
+    const widget = (re: RegExp, glyph: (s: string, m: RegExpExecArray) => string | undefined, cls: string) => {
+      re.lastIndex = 0;
+      for (let w: RegExpExecArray | null; (w = re.exec(l.text)); ) {
+        const from = l.from + w.index;
+        const g = glyph(w[0], w);
+        if (g === undefined || touches(from, from + w[0].length) || (w.index > 0 && l.text[w.index - 1] === "\\") || inCodeSpan(state, from, from + w[0].length)) continue;
+        decos.push(Decoration.replace({ widget: new GlyphWidget(w[0], g, cls) }).range(from, from + w[0].length));
+      }
+    };
+    widget(/\[\^([^\]\s]+)\](?!:)/g, (_s, w) => w[1], "cm-pn-footnote-ref");
+    widget(entityRe, (s) => ENTITY[s], "cm-pn-entity");
+  }
+  return Decoration.set(decos, true);
+}
+
+const extraPlugin = ViewPlugin.fromClass(
+  class {
+    decorations: DecorationSet;
+    constructor(view: EditorView) { this.decorations = buildExtraDecos(view); }
+    update(update: { docChanged: boolean; selectionSet: boolean; viewportChanged: boolean; state: EditorState; view: EditorView }) {
+      if (update.docChanged || update.selectionSet || update.viewportChanged) this.decorations = buildExtraDecos(update.view);
+    }
+  },
+  { decorations: (v) => v.decorations },
+);
 
 const subSupPlugin = ViewPlugin.fromClass(
   class {
@@ -630,12 +752,16 @@ const attachmentsRenderPlugin = ViewPlugin.fromClass(
 
 // Paste/drop handler: stash each file/blob as an attachment and insert `![name](pending:<id>)` (image) or `[name](pending:<id>)` (other) at the cursor.
 // shortcut: bypasses Atomic's default paste handling, which would just paste file paths as plain text.
-async function insertAttachmentAt(view: EditorView, pos: number, file: { name: string; mime: string; bytes: Uint8Array }): Promise<void> {
+// The link gets its own line (Atomic previews an image only as a block) and the caret lands on the line below it; shared by paste, drop and the Screenshot/Datei buttons.
+export async function insertAttachmentAt(view: EditorView, pos: number, file: { name: string; mime: string; bytes: Uint8Array }): Promise<void> {
   const { stashAttachment, makeMarkdownLink } = await import("./attachments");
   const { markdownTarget } = await stashAttachment(file);
   const link = makeMarkdownLink(file.name, markdownTarget, file.mime);
-  const blank = pos > 0 && view.state.doc.sliceString(pos - 1, pos) !== "\n" ? "\n" : "";
-  view.dispatch({ changes: { from: pos, insert: blank + link }, selection: { anchor: pos + blank.length + link.length }, userEvent: "input.paste" });
+  const { doc } = view.state;
+  pos = Math.min(pos, doc.length); // the doc may have shrunk while the bytes were stashed
+  const before = pos > 0 && doc.sliceString(pos - 1, pos) !== "\n" ? "\n" : "";
+  const nextIsBreak = doc.sliceString(pos, pos + 1) === "\n";
+  view.dispatch({ changes: { from: pos, insert: before + link + (nextIsBreak ? "" : "\n") }, selection: { anchor: pos + before.length + link.length + 1 }, userEvent: "input.paste" });
 }
 
 const attachmentPasteHandler = EditorView.domEventHandlers({
@@ -679,10 +805,12 @@ export const editorExtensions = [
   Prec.highest(growFenceWithOpening),
   Prec.highest(plainEmphasisChars),
   Prec.highest(enterLeavesEmptyMarker),
+  Prec.highest(enterBuildsTable),
   Prec.highest(leaveEmptyItemOrQuote),
   Prec.highest(fencePlugin),
   Prec.high(fenceArrowExit),
   Prec.high(subSupPlugin),
+  Prec.high(extraPlugin),
   Prec.high(emojiPlugin),
   Prec.high(attachmentsRenderPlugin),
   pendingImageSrc,

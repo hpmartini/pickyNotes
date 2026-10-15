@@ -78,6 +78,27 @@ describe("CaptureView", () => {
     expect(send).toHaveBeenCalledWith(expect.objectContaining({ kind: "text", text: expect.stringContaining("pending:abc") }));
   });
 
+  it("sends only the attachments the text still references, then drops the stash", async () => {
+    const { stashAttachment, getAttachment } = await import("./lib/attachments");
+    const kept = await stashAttachment({ name: "a.pdf", mime: "application/pdf", bytes: new Uint8Array([1, 2, 3]) });
+    const stray = await stashAttachment({ name: "weg.png", mime: "image/png", bytes: new Uint8Array([9]) });
+    const send = vi.fn(async () => ({ id: "1" }));
+    render(<CaptureView queue={new CaptureQueue(`c${n++}`)} send={send} />);
+    fireEvent.change(screen.getByLabelText("Editor"), { target: { value: `siehe [a.pdf](${kept.markdownTarget})` } });
+    fireEvent.click(screen.getByRole("button", { name: "Speichern" }));
+    await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Gesendet"));
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ attachments: [{ id: kept.id, name: "a.pdf", mime: "application/pdf", data: "AQID" }] }));
+    expect(await getAttachment(kept.id)).toBeUndefined();
+    expect(await getAttachment(stray.id)).toBeDefined(); // never referenced: stays until the user links it
+  });
+
+  it("Sprache without a running WhisperStorm shows a clear message and does not switch to Stopp", async () => {
+    render(<CaptureView queue={new CaptureQueue(`c${n++}`)} send={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Sprache" }));
+    await waitFor(() => expect(screen.getByRole("status").textContent).toBe("WhisperStorm läuft nicht"));
+    expect(screen.queryByRole("button", { name: "Stopp" })).toBeNull();
+  });
+
   it("keeps the text the user typed while the send was pending", async () => {
     let finish!: () => void;
     const send = vi.fn(() => new Promise<{ id: string }>((resolve) => (finish = () => resolve({ id: "1" }))));

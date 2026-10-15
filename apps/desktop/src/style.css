@@ -71,6 +71,22 @@ label { display: grid; gap: var(--space-1); font-weight: 500; }
 /* Subscript/superscript marks — the source stays `H~2~O` and `x^2^`, the inner chars get a small/baseline-shifted class. */
 .cm-pn-sub { font-size: 0.75em; vertical-align: sub; }
 .cm-pn-sup { font-size: 0.75em; vertical-align: super; }
+/* Inline HTML, footnotes, definition lists, heading ids, entities (decorations in lib/editor.ts). */
+.cm-pn-html-b { font-weight: 700; }
+.cm-pn-html-i { font-style: italic; }
+.cm-pn-html-u { text-decoration: underline; }
+.cm-pn-html-s { text-decoration: line-through; }
+.cm-pn-html-mark { background: color-mix(in srgb, var(--accent) 22%, transparent); border-radius: 2px; }
+.cm-pn-html-kbd { font-family: ui-monospace, monospace; font-size: 0.9em; border: 1px solid var(--line); border-radius: 3px; padding: 0 3px; }
+.cm-pn-footnote-ref { font-size: 0.75em; vertical-align: super; color: var(--accent); }
+.cm-pn-footnote-def { font-size: 0.9em; color: var(--muted, inherit); }
+/* lezer reads `[^1]: text` as a link reference definition; Atomic would style "text" as a link. */
+.cm-pn-footnote-def .cm-atomic-link { color: inherit; text-decoration: none; pointer-events: none; }
+.cm-pn-footnote-def .cm-atomic-link-icon { display: none; }
+.cm-pn-footnote-label { font-weight: 600; color: var(--accent); }
+.cm-pn-dl-term { font-weight: 700; }
+.cm-pn-dl-def { padding-left: 1.5em; }
+.cm-pn-heading-id { font-size: 0.7em; opacity: 0.55; font-weight: 400; }
 
 /* Code-fence hiding: the opening and closing ``` lines are invisible while the cursor is outside the block. */
 .cm-pn-fence-hidden { display: none; }

@@ -27,9 +27,12 @@ test("sub/sup: H~2~O and x^2^ render as subscript/superscript", async ({ page })
   const editor = page.locator(".cm-content");
   await editor.click();
   await steps(page, "subsup", ["H~2~O ", "x^2^"]);
-  await expect(editor).toContainText("H~2~O x^2^");
-  expect(await page.locator(".cm-pn-sub").count()).toBeGreaterThan(0);
-  expect(await page.locator(".cm-pn-sup").count()).toBeGreaterThan(0);
+  expect(await getDraft(page)).toBe("H~2~O x^2^");
+  await expect(page.locator(".cm-pn-sub")).toHaveText("2");
+  await expect(page.locator(".cm-pn-sup")).toHaveText("2");
+  await expect(editor).toHaveText("H2O x2"); // delimiters hidden while the cursor is outside
+  await page.keyboard.press("ArrowLeft"); // cursor inside the span: source visible for editing
+  await expect(editor).toHaveText("H2O x^2^");
 });
 
 test("fence hiding: opening and closing ``` lines disappear while cursor is outside", async ({ page }) => {
@@ -202,7 +205,7 @@ test("paste/drop: a PDF becomes a [name](pending:id) chip, a dropped image previ
     dt.items.add(new File([new Uint8Array([0x25, 0x50, 0x44, 0x46])], "bericht.pdf", { type: "application/pdf" }));
     document.querySelector(".cm-content")!.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
   });
-  await expect.poll(() => getDraft(page)).toMatch(/^vor\n\[bericht\.pdf\]\(pending:[a-f0-9-]+\)$/);
+  await expect.poll(() => getDraft(page)).toMatch(/^vor\n\[bericht\.pdf\]\(pending:[a-f0-9-]+\)\n$/);
   await expect(page.locator(".cm-pn-file-chip")).toHaveText("📎 bericht.pdf");
   await page.locator(".editor").screenshot({ path: test.info().outputPath("pdf-paste.png") });
   // Drop an image onto the editor: lands as an inline image preview.
@@ -218,6 +221,62 @@ test("paste/drop: a PDF becomes a [name](pending:id) chip, a dropped image previ
   await expect(page.locator(".cm-content .cm-atomic-image img")).toHaveAttribute("src", /^blob:/);
   await page.locator(".editor").screenshot({ path: test.info().outputPath("drop-image.png") });
   await page.getByRole("button", { name: /Speichern|Senden/ }).count();
+});
+
+const PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+
+/** Pretends to be the Tauri webview: `invoke` answers from `window.__ws`/`__png`, records every call in `window.__calls`. */
+async function mockTauri(page: Page, ws: { start: unknown; stop?: unknown }) {
+  await page.addInitScript(([w, png]) => {
+    const calls: [string, unknown][] = [];
+    Object.assign(window, { __calls: calls, __TAURI_INTERNALS__: {
+      transformCallback: () => 0,
+      invoke: async (cmd: string, args: { cmd?: "start" | "stop" }) => {
+        calls.push([cmd, args]);
+        if (cmd === "whisperstorm") return (w as Record<string, unknown>)[args.cmd!];
+        if (cmd === "screenshot") return png;
+        if (cmd === "plugin:global-shortcut|is_registered") return true;
+        return null;
+      },
+    } });
+  }, [ws, PNG_B64] as const);
+}
+
+test("speech: Sprache starts WhisperStorm, Stopp inserts the transcript at the cursor", async ({ page }) => {
+  await mockTauri(page, { start: { ok: true, phase: "recording" }, stop: { ok: true, phase: "idle", text: "Hallo Welt" } });
+  await page.goto("/");
+  await page.locator(".cm-content").click();
+  await steps(page, "speech", [..."vor"]);
+  await page.getByRole("button", { name: "Sprache" }).click();
+  await page.getByRole("button", { name: "Stopp" }).click();
+  await expect(page.getByRole("status")).toHaveText("Transkript eingefügt.");
+  await expect.poll(() => getDraft(page)).toBe("vor\nHallo Welt");
+  expect((await page.evaluate(() => (window as unknown as { __calls: unknown[][] }).__calls.filter((c) => c[0] === "whisperstorm").map((c) => c[1])))).toEqual([{ cmd: "start" }, { cmd: "stop" }]);
+  await page.screenshot({ path: test.info().outputPath("speech-transcript.png") });
+});
+
+test("speech: a missing WhisperStorm shows the error and leaves the draft alone", async ({ page }) => {
+  await mockTauri(page, { start: { ok: false, error: "WhisperStorm läuft nicht (kein Socket)" } });
+  await page.goto("/");
+  await page.locator(".cm-content").click();
+  await steps(page, "speech-err", [..."vor"]);
+  await page.getByRole("button", { name: "Sprache" }).click();
+  await expect(page.getByRole("status")).toHaveText("WhisperStorm läuft nicht (kein Socket)");
+  await expect(page.getByRole("button", { name: "Stopp" })).toHaveCount(0);
+  expect(await getDraft(page)).toBe("vor");
+});
+
+test("buttons: Screenshot and Datei insert inline attachments through the same pending: path as paste", async ({ page }) => {
+  await mockTauri(page, { start: { ok: false } });
+  await page.goto("/");
+  await page.locator(".cm-content").click();
+  await page.getByRole("button", { name: "Screenshot" }).click();
+  await expect.poll(() => getDraft(page)).toMatch(/^!\[screenshot\.png\]\(pending:[a-f0-9-]+\)\n$/);
+  await expect(page.locator(".cm-content .cm-atomic-image img")).toHaveAttribute("src", /^blob:/);
+  await page.locator('input[type="file"]').setInputFiles({ name: "notiz.pdf", mimeType: "application/pdf", buffer: Buffer.from("%PDF") });
+  await expect.poll(() => getDraft(page)).toMatch(/\n\[notiz\.pdf\]\(pending:[a-f0-9-]+\)\n$/);
+  await expect(page.locator(".cm-pn-file-chip")).toHaveText("📎 notiz.pdf");
+  await page.screenshot({ path: test.info().outputPath("buttons-attachments.png") });
 });
 
 test("paste: pasting an image inserts an inline `![name](pending:<id>)` link", async ({ page }) => {

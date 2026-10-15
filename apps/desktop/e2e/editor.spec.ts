@@ -192,13 +192,11 @@ test("character-by-character typing: no unexpected heading, no line-height jump,
   await step({ type: "press", key: "Enter" }, "Enter continues quote");
   await step({ type: "press", key: "Enter" }, "Enter exits quote with blank line");
 
-  // ---- fenced code: Atomic auto-closes the fence, so Enter goes into the body and ArrowDown/End leaves it ----
+  // ---- fenced code: Atomic auto-closes the fence, so Enter goes into the body and ArrowDown leaves it ----
   await step("```", "code fence open");
   await step({ type: "press", key: "Enter" }, "Enter into code body");
   await step("code hier", "code body");
-  await step({ type: "press", key: "ArrowDown" }, "to closing fence");
-  await step({ type: "press", key: "End" }, "end of closing fence");
-  await step({ type: "press", key: "Enter" }, "Enter after fence");
+  await step({ type: "press", key: "ArrowDown" }, "ArrowDown on the last body line leaves the block");
   await step({ type: "press", key: "Enter" }, "blank line");
 
   // ---- link ----

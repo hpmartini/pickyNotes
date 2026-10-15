@@ -5,8 +5,8 @@ import { EditorView } from "@codemirror/view";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CaptureQueue, QueuedCapture, Send } from "./lib/queue";
 import { inTauri, whisperstorm } from "./lib/tauri";
-import { stashAttachment, makeMarkdownLink, readAttachmentsForSend, dropAttachments } from "./lib/attachments";
-import { dispatchInsertTable, editorExtensions, insertTextAtCursor } from "./lib/editor";
+import { readAttachmentsForSend, dropAttachments } from "./lib/attachments";
+import { dispatchInsertTable, editorExtensions, insertAttachmentAt, insertTextAtCursor } from "./lib/editor";
 
 const MAX_BYTES = 100 * 1024 * 1024; // sanity cap against freezing the webview; the server decides (413 above MAX_ATTACHMENT_MB without an object store)
 
@@ -130,10 +130,7 @@ export function CaptureView({ queue, send, screenshot }: Props) {
 
   async function insertAttachment(file: { name: string; mime: string; bytes: Uint8Array }) {
     const view = getView();
-    if (!view) return;
-    const { markdownTarget } = await stashAttachment(file);
-    const link = makeMarkdownLink(file.name, markdownTarget, file.mime);
-    insertTextAtCursor(view, link);
+    if (view) await insertAttachmentAt(view, view.state.selection.main.head, file);
   }
 
   async function takeScreenshot() {

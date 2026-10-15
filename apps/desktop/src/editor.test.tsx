@@ -348,6 +348,33 @@ describe("Table source preserves alignment on re-parse", () => {
   });
 });
 
+describe("Ordered list nesting", () => {
+  it("Tab nests an ordered item by the marker width and restarts at 1; Enter twice leaves level by level", () => {
+    const view = mount();
+    type(view, "1. a");
+    press(view, "Enter");
+    type(view, "b");
+    press(view, "Enter");
+    press(view, "Tab");
+    expect(doc(view)).toBe("1. a\n2. b\n   1. ");
+    type(view, "c");
+    let lists = 0;
+    syntaxTree(view.state).iterate({ enter: (n) => void (n.name === "OrderedList" && lists++) });
+    expect(lists).toBe(2); // really nested, not a sibling with a 2-space indent
+    press(view, "Enter");
+    expect(doc(view)).toBe("1. a\n2. b\n   1. c\n   2. ");
+    press(view, "Enter"); // empty nested marker: one level out, no leftover indent
+    expect(doc(view)).toBe("1. a\n2. b\n   1. c\n2. ");
+    press(view, "Enter"); // empty top-level marker: cleared with a blank separator
+    expect(doc(view)).toBe("1. a\n2. b\n   1. c\n\n");
+  });
+  it("Shift-Tab outdents an ordered item by the marker width", () => {
+    const view = mount("1. a\n   1. b");
+    press(view, "Tab", true);
+    expect(doc(view)).toBe("1. a\n1. b");
+  });
+});
+
 describe("Task list typing", () => {
   it.each([
     ["- [", "- [ ] "],
