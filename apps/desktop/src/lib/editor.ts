@@ -457,19 +457,11 @@ export function dispatchInsertTable(view: EditorView): void {
 function attachmentsRenderDecos(view: EditorView): DecorationSet {
   const decos: Range<Decoration>[] = [];
   const text = view.state.doc.toString();
-  const imgRe = /!\[([^\]]*)\]\((?:pending:[a-zA-Z0-9_-]+|[^)\s]+)\)/g;
-  const linkRe = /\[([^\]]+)\]\((?:pending:[a-zA-Z0-9_-]+|[^)\s]+)\)/g;
+  const linkRe = /\[([^\]]+)\]\(pending:([a-zA-Z0-9-]+)\)/g;
   let m: RegExpExecArray | null;
-  while ((m = imgRe.exec(text))) {
-    const from = m.index;
-    const to = from + m[0].length;
-    if (!inside(view.state, from, "FencedCode") && !inside(view.state, from, "CodeBlock")) {
-      decos.push(Decoration.replace({ widget: new PendingImageWidget(m[1] ?? "") }).range(from, to));
-    }
-  }
   while ((m = linkRe.exec(text))) {
-    // Skip images we already wrapped.
-    if (decos.length > 0 && decos[decos.length - 1]!.from === m.index) continue;
+    // Images keep their source line; Atomic shows the block preview and pendingImageSrc fixes its src.
+    if (text[m.index - 1] === "!") continue;
     const from = m.index;
     const to = from + m[0].length;
     if (!inside(view.state, from, "FencedCode") && !inside(view.state, from, "CodeBlock")) {
@@ -477,19 +469,6 @@ function attachmentsRenderDecos(view: EditorView): DecorationSet {
     }
   }
   return Decoration.set(decos, true);
-}
-
-class PendingImageWidget extends WidgetType {
-  constructor(readonly alt: string) { super(); }
-  toDOM() {
-    const span = document.createElement("span");
-    span.className = "cm-pn-pending-image";
-    span.textContent = `🖼  ${this.alt || "Bild"}`;
-    span.title = "Anhang wird beim Speichern in den Vault übertragen";
-    return span;
-  }
-  eq(other: PendingImageWidget) { return other.alt === this.alt; }
-  ignoreEvent() { return true; }
 }
 
 class FileChipWidget extends WidgetType {
@@ -503,6 +482,26 @@ class FileChipWidget extends WidgetType {
   eq(other: FileChipWidget) { return other.name === this.name; }
   ignoreEvent() { return true; }
 }
+
+// Atomic renders a block <img> for `![](pending:<id>)`; point it at the locally stashed bytes.
+const pendingImageSrc = ViewPlugin.fromClass(
+  class {
+    obs: MutationObserver;
+    constructor(view: EditorView) {
+      const fix = () => view.contentDOM.querySelectorAll<HTMLImageElement>("img[src^=\"pending:\"]").forEach((img) => {
+        const id = img.getAttribute("src")!.slice("pending:".length);
+        img.removeAttribute("src"); // avoid refetching while the lookup is pending
+        void import("./attachments").then(({ getAttachment }) => getAttachment(id)).then((a) => {
+          if (a) img.src = URL.createObjectURL(new Blob([a.bytes as BlobPart], { type: a.mime }));
+        });
+      });
+      this.obs = new MutationObserver(fix);
+      this.obs.observe(view.contentDOM, { childList: true, subtree: true });
+      fix();
+    }
+    destroy() { this.obs.disconnect(); }
+  },
+);
 
 const attachmentsRenderPlugin = ViewPlugin.fromClass(
   class {
@@ -569,6 +568,7 @@ export const editorExtensions = [
   Prec.high(subSupPlugin),
   Prec.high(emojiPlugin),
   Prec.high(attachmentsRenderPlugin),
+  pendingImageSrc,
   Prec.highest(attachmentPasteHandler),
   Prec.high(tableToolbar),
   atomicTables(), // keep Atomic's table widgets so cells render; our toolbar writes valid GFM that re-parses as Table.

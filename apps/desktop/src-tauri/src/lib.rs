@@ -106,7 +106,7 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Read;
+    use std::io::{BufRead, Read};
     use std::os::unix::net::UnixListener;
     use std::path::PathBuf;
 

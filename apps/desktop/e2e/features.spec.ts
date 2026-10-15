@@ -94,7 +94,7 @@ test("paste: pasting an image inserts an inline `![name](pending:<id>)` link", a
   await editor.click();
   // Programmatically dispatch a paste with an image file (the real browser clipboard can't be driven from headless).
   const inserted = await page.evaluate(async () => {
-    const file = new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47])], "bild.png", { type: "image/png" });
+    const file = new File([Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="), (c) => c.charCodeAt(0))], "bild.png", { type: "image/png" });
     const dt = new DataTransfer();
     dt.items.add(file);
     const event = new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true });
@@ -103,4 +103,7 @@ test("paste: pasting an image inserts an inline `![name](pending:<id>)` link", a
     return localStorage.getItem("picky.draft") ?? "";
   });
   expect(inserted).toMatch(/!\[[^\]]*\]\(pending:[a-f0-9-]+\)/);
+  await expect(page.locator(".cm-content .cm-atomic-image img")).toHaveCount(1);
+  await expect(page.locator(".cm-content .cm-atomic-image img")).toHaveAttribute("src", /^blob:/);
+  await page.screenshot({ path: "test-results/paste-image.png" });
 });

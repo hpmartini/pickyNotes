@@ -35,15 +35,32 @@ export async function stashAttachment(file: { name: string; mime: string; bytes:
   return { id, markdownTarget: `pending:${id}` };
 }
 
-export async function readAttachmentsForSend(): Promise<{ id: string; name: string; mime: string; data: string }[]> {
+const pendingIds = (text: string) => new Set([...text.matchAll(/pending:([a-zA-Z0-9-]+)/g)].map((m) => m[1]!));
+
+async function all(): Promise<StoredAttachment[]> {
   const d = await db();
-  const all = await new Promise<StoredAttachment[]>((resolve, reject) => {
-    const tx = d.transaction(STORE, "readonly");
-    const req = tx.objectStore(STORE).getAll();
+  return new Promise((resolve, reject) => {
+    const req = d.transaction(STORE, "readonly").objectStore(STORE).getAll();
     req.onsuccess = () => resolve((req.result ?? []) as StoredAttachment[]);
     req.onerror = () => reject(req.error);
   });
-  return all.map((a) => ({ id: a.id, name: a.name, mime: a.mime, data: toBase64(a.bytes) }));
+}
+
+export async function getAttachment(id: string): Promise<StoredAttachment | undefined> {
+  return (await all()).find((a) => a.id === id);
+}
+
+/** Only attachments the text still references; unreferenced strays (deleted links) are not sent. */
+export async function readAttachmentsForSend(text: string): Promise<{ id: string; name: string; mime: string; data: string }[]> {
+  const ids = pendingIds(text);
+  return (await all()).filter((a) => ids.has(a.id)).map((a) => ({ id: a.id, name: a.name, mime: a.mime, data: toBase64(a.bytes) }));
+}
+
+/** Called once the capture is safely queued/delivered: the queue item carries the bytes now. */
+export async function dropAttachments(text: string): Promise<void> {
+  const d = await db();
+  const store = d.transaction(STORE, "readwrite").objectStore(STORE);
+  for (const id of pendingIds(text)) store.delete(id);
 }
 
 const toBase64 = (bytes: Uint8Array) => {

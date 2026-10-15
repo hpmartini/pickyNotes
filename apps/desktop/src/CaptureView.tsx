@@ -5,7 +5,7 @@ import { EditorView } from "@codemirror/view";
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CaptureQueue, QueuedCapture, Send } from "./lib/queue";
 import { inTauri, whisperstorm } from "./lib/tauri";
-import { stashAttachment, makeMarkdownLink, readAttachmentsForSend } from "./lib/attachments";
+import { stashAttachment, makeMarkdownLink, readAttachmentsForSend, dropAttachments } from "./lib/attachments";
 import { dispatchInsertTable, editorExtensions, insertTextAtCursor } from "./lib/editor";
 
 const MAX_BYTES = 100 * 1024 * 1024; // sanity cap against freezing the webview; the server decides (413 above MAX_ATTACHMENT_MB without an object store)
@@ -94,8 +94,9 @@ export function CaptureView({ queue, send, screenshot }: Props) {
     if (!text.trim()) return;
     const sent = text;
     // The user may keep typing while the send is pending; clear only if the editor still holds what was sent. A rejected draft stays.
-    const attachments = await readAttachmentsForSend();
+    const attachments = await readAttachmentsForSend(sent);
     if (await submit({ kind: "text", source: "typed", text: sent, ...(attachments.length ? { attachments } : {}) })) {
+      await dropAttachments(sent);
       if (textRef.current === sent) {
         setText("");
         setDocId((n) => n + 1); // remount the editor empty; markdownSource is only read at mount
