@@ -87,7 +87,7 @@ export async function capture(deps: Deps, input: CaptureInput): Promise<{ id: st
   const createdAt = dup?.createdAt ?? new Date().toISOString();
   if (input.kind === "text") {
     if (!input.text?.trim()) throw new BadCaptureError("text required");
-    // Store each inline attachment under raw/attachments/<id>-<safe>; rewrite `pending:<id>` in the body to the vault-relative path.
+    // Store each inline attachment under raw/attachments/<id>-<attachmentId>-<safe>; rewrite `pending:<id>` in the body to the vault-relative path.
     const body = await storeAttachmentsAndRewrite(deps, id, input.text, input.attachments);
     await finishNote(deps, { id, body, source: input.source, kind: "text", createdAt, clientId: input.clientId });
     return { id };
@@ -112,7 +112,7 @@ export async function capture(deps: Deps, input: CaptureInput): Promise<{ id: st
 
 /**
  * Stores each inline attachment and rewrites `pending:<attachmentId>` references in the body
- * to `attachments/<noteId>-<safe-name>` (vault-relative). Unknown IDs are left as-is so a
+ * to `raw/attachments/<noteId>-<attachmentId>-<safe-name>` (vault-relative). Unknown IDs are left as-is so a
  * truncated payload doesn't silently drop the user's references.
  */
 async function storeAttachmentsAndRewrite(deps: Deps, noteId: string, body: string, attachments?: { id: string; name: string; mime: string; data: string }[]): Promise<string> {
@@ -121,7 +121,8 @@ async function storeAttachmentsAndRewrite(deps: Deps, noteId: string, body: stri
   for (const a of attachments) {
     const bytes = Buffer.from(a.data, "base64");
     if (bytes.length > deps.maxAttachmentBytes) throw new PayloadTooLargeError(`attachment exceeds ${deps.maxAttachmentBytes} bytes`);
-    const rel = await deps.vault.writeAttachment(noteId, a.name, bytes);
+    // The attachment id is part of the stored name: same-named payloads (two screenshot.png) must not overwrite each other. The id is client input, so it is reduced to [\w-].
+    const rel = await deps.vault.writeAttachment(`${noteId}-${a.id.replace(/[^\w-]/g, "_")}`, a.name, bytes);
     paths.set(a.id, rel);
   }
   return body.replace(/pending:([a-zA-Z0-9_-]+)/g, (match, id: string) => paths.get(id) ?? match);

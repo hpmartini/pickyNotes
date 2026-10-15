@@ -144,11 +144,35 @@ describe("capture pipeline", () => {
     })).json()) as { id: string };
     expect(id).toBeTypeOf("string");
     const file = await readFile(path.join(root, `raw/${id}.md`), "utf8");
-    expect(file).toContain(`![bild](raw/attachments/${id}-bild.png)`);
-    expect(file).toContain(`[dok](raw/attachments/${id}-dok.pdf)`);
+    expect(file).toContain(`![bild](raw/attachments/${id}-a-bild.png)`);
+    expect(file).toContain(`[dok](raw/attachments/${id}-b-dok.pdf)`);
     expect(file).not.toContain("pending:");
-    expect(await readFile(path.join(root, `raw/attachments/${id}-bild.png`), "utf8")).toBe("hi");
-    expect(await readFile(path.join(root, `raw/attachments/${id}-dok.pdf`), "utf8")).toBe("hi");
+    expect(await readFile(path.join(root, `raw/attachments/${id}-a-bild.png`), "utf8")).toBe("hi");
+    expect(await readFile(path.join(root, `raw/attachments/${id}-b-dok.pdf`), "utf8")).toBe("hi");
+  });
+
+  it("text with attachments: two same-named files with different bytes get two files and two distinct links", async () => {
+    const att = (id: string, s: string) => ({ id, name: "screenshot.png", mime: "image/png", data: Buffer.from(s).toString("base64") });
+    const body = { kind: "text", source: "typed", text: "![a](pending:s1) ![b](pending:s2)", attachments: [att("s1", "AAA"), att("s2", "BBB")] };
+    const { id } = (await (await post("/captures", body)).json()) as { id: string };
+    const file = await readFile(path.join(root, `raw/${id}.md`), "utf8");
+    const links = [...file.matchAll(/!\[[ab]\]\(([^)]+)\)/g)].map((m) => m[1]!);
+    expect(links).toEqual([`raw/attachments/${id}-s1-screenshot.png`, `raw/attachments/${id}-s2-screenshot.png`]);
+    expect(await readFile(path.join(root, links[0]!), "utf8")).toBe("AAA");
+    expect(await readFile(path.join(root, links[1]!), "utf8")).toBe("BBB");
+    expect((await readdir(path.join(root, "raw/attachments"))).sort()).toEqual(links.map((l) => path.basename(l)));
+  });
+
+  it("text with attachments: a retry with the same clientId neither duplicates nor overwrites the stored files", async () => {
+    const att = (id: string, s: string) => ({ id, name: "screenshot.png", mime: "image/png", data: Buffer.from(s).toString("base64") });
+    const body = { kind: "text", source: "typed", text: "![a](pending:s1) ![b](pending:s2)", clientId: "cid-att", attachments: [att("s1", "AAA"), att("s2", "BBB")] };
+    const first = (await (await post("/captures", body)).json()) as { id: string };
+    const again = (await (await post("/captures", body)).json()) as { id: string };
+    expect(again.id).toBe(first.id);
+    expect(await readdir(path.join(root, "raw/attachments"))).toHaveLength(2);
+    expect(await readFile(path.join(root, `raw/attachments/${first.id}-s1-screenshot.png`), "utf8")).toBe("AAA");
+    expect(await readFile(path.join(root, `raw/attachments/${first.id}-s2-screenshot.png`), "utf8")).toBe("BBB");
+    expect(await readFile(path.join(root, `raw/${first.id}.md`), "utf8")).not.toContain("pending:");
   });
 
   it("text with attachments: unknown pending:<id> in the body is left as-is (no silent drop)", async () => {
