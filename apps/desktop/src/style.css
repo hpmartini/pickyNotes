@@ -1,19 +1,65 @@
-:root { color-scheme: light dark; --bg: #fff; --fg: #1a1a1a; --muted: #666; --line: #d8d8d8; --accent: #5b3fd1; }
-@media (prefers-color-scheme: dark) { :root { --bg: #16161a; --fg: #ececf0; --muted: #9a9aa5; --line: #34343c; --accent: #9b86ff; } }
-.editor { --atomic-editor-bg: var(--bg); --atomic-editor-fg: var(--fg); }
+/* One set of tokens for colour, spacing and shape; components below only reference these. */
+:root {
+  color-scheme: light dark;
+  --bg: #fff; --surface: #f6f6f8; --fg: #1a1a1a; --muted: #666; --line: #d8d8d8;
+  --accent: #5b3fd1; --accent-fg: #fff; --danger: #c0262d;
+  --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
+  --radius: 8px; --ease: 120ms ease;
+}
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #16161a; --surface: #1f1f25; --fg: #ececf0; --muted: #9a9aa5; --line: #34343c; --accent: #9b86ff; --accent-fg: #16161a; --danger: #ff7a80; }
+}
+* { box-sizing: border-box; }
 body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 -apple-system, system-ui, sans-serif; }
-main { display: flex; flex-direction: column; height: 100vh; padding: 12px 16px; box-sizing: border-box; gap: 8px; }
-nav { display: flex; gap: 4px; }
-button, .button, input { font: inherit; color: inherit; background: transparent; border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
-input { cursor: text; }
+.editor { --atomic-editor-bg: var(--surface); --atomic-editor-fg: var(--fg); }
+
+/* one centred column so tabs, editor and actions share the same edges on wide windows */
+main { display: flex; flex-direction: column; height: 100vh; max-width: 780px; margin: 0 auto; padding: var(--space-3) var(--space-4) var(--space-4); gap: var(--space-3); }
+main > section, main > form { flex: 1; min-height: 0; }
+section { display: flex; flex-direction: column; gap: var(--space-3); }
+
+/* tabs */
+nav { display: flex; gap: var(--space-1); border-bottom: 1px solid var(--line); }
+nav button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: var(--space-2) var(--space-3); color: var(--muted); background: none; }
+nav button:hover { color: var(--fg); }
+nav button[aria-current="true"] { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+
+/* buttons: secondary by default, .primary for the one main action per view */
+button, .button, input { font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); padding: 6px var(--space-3); cursor: pointer; transition: background var(--ease), border-color var(--ease), color var(--ease); }
+button:hover:not(:disabled), .button:hover { background: var(--surface); border-color: var(--muted); }
+button.primary, button[type="submit"] { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); font-weight: 600; }
+button.primary:hover:not(:disabled), button[type="submit"]:hover:not(:disabled) { background: var(--accent); filter: brightness(1.1); }
+button[aria-pressed="true"] { border-color: var(--danger); color: var(--danger); }
+button:disabled { opacity: 0.45; cursor: default; }
+input { cursor: text; width: 100%; }
 button:focus-visible, .button:focus-within, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-button[aria-current="true"], button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
-button:disabled { opacity: 0.5; cursor: default; }
-section { display: flex; flex-direction: column; flex: 1; min-height: 0; gap: 8px; }
-.editor { flex: 1; min-height: 160px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
-.actions { display: flex; gap: 8px; }
-form[role="search"] { display: flex; gap: 8px; } form[role="search"] input { flex: 1; }
-form[aria-label="Einstellungen"] { display: grid; gap: 8px; max-width: 420px; }
-label { display: grid; gap: 2px; }
-.hits { list-style: none; padding: 0; overflow: auto; } .hits li { padding: 8px 0; border-bottom: 1px solid var(--line); }
-.hits p { margin: 2px 0; } small { color: var(--muted); }
+
+/* capture */
+.editor { flex: 1; min-height: 160px; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; transition: border-color var(--ease); }
+.editor:focus-within { border-color: var(--accent); }
+/* the editor reserves 208px below the text for scrolling past the end, which made a scrollbar permanent */
+.editor .cm-content { padding: var(--space-3) var(--space-4); }
+.editor .cm-scroller { overflow-y: auto; }
+.actions { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
+.actions .status { margin: 0 0 0 auto; min-height: 1.5em; color: var(--muted); font-size: 13px; }
+.actions .button input { display: none; }
+.rejected { border: 1px solid var(--danger); border-radius: var(--radius); padding: var(--space-3); flex: none; max-height: 30vh; overflow: auto; }
+.rejected h2 { margin: 0 0 var(--space-2); font-size: 14px; color: var(--danger); }
+.rejected ul { margin: 0; padding: 0; list-style: none; display: grid; gap: var(--space-2); }
+
+/* search */
+form[role="search"] { display: flex; gap: var(--space-2); flex: none; }
+.hits { list-style: none; margin: 0; padding: 0; overflow: auto; display: grid; gap: var(--space-2); align-content: start; }
+.hits li { padding: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+.hits p { margin: var(--space-1) 0; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.hint { color: var(--muted); margin: 0; }
+[role="alert"] { color: var(--danger); margin: 0; }
+small { color: var(--muted); overflow-wrap: anywhere; }
+
+/* settings */
+form[aria-label="Einstellungen"] { display: grid; gap: var(--space-3); max-width: 420px; align-content: start; }
+form[aria-label="Einstellungen"] button[type="submit"] { justify-self: start; }
+label { display: grid; gap: var(--space-1); font-weight: 500; }
+
+/* narrow windows: stack the action row, never scroll sideways */
+@media (max-width: 480px) { .actions .status { flex-basis: 100%; margin-left: 0; } main { padding: var(--space-2) var(--space-3) var(--space-3); } }

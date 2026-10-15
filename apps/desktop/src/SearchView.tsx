@@ -24,7 +24,8 @@ export function SearchView({ search }: { search: (q: string) => Promise<SearchHi
         <button type="submit">Suchen</button>
       </form>
       {error && <p role="alert">{error}</p>}
-      {hits?.length === 0 && <p>Keine Treffer.</p>}
+      {hits === null && !error && <p className="hint">Tippe einen Begriff oder eine Frage; gesucht wird im Volltext und nach Bedeutung.</p>}
+      {hits?.length === 0 && <p className="hint">Keine Treffer.</p>}
       <ul className="hits">
         {hits?.map((h) => (
           <li key={h.id}>

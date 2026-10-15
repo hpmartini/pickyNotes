@@ -113,5 +113,18 @@ Einwand: Vertagtes sei nicht auf Unmöglichkeit geprüft, nativer Lauf unbelegt.
 - **Natives Tauri-Fenster:** Log der laufenden App ohne Fehler/Panics, Fenster startet; Bedienung per Skript nicht möglich (Bildschirm gesperrt, Apple-Events verweigert). Nicht belegt bleiben: globaler Hotkey, Schlüsselbund, `screencapture`, Mikrofon im nativen Fenster.
 - Aufgeräumt: Test-Container `picky-whisper-test` und Verify-Image entfernt. Mein Test-Port 8790 statt 8787 (dort läuft dein MAGOS auf 127.0.0.1).
 
+## Nachtrag 5: UI-Überarbeitung nach Nutzerkritik („UI ist eine Katastrophe“)
+Ehrliche Einordnung: Die UI war nur funktional getestet (Tests, e2e), ich hatte sie nie gerendert angesehen. Jetzt gerendert (Playwright, 375/560/768/1280 px, hell und dunkel) und die Mängel behoben:
+- Editor hatte eine **dauerhafte Scrollbar**: Atomic Editor reserviert 208 px Bottom-Padding (Scroll über das Ende); jetzt eigenes Padding, `overflow-y: auto`.
+- **Keine Hierarchie:** flache Button-Tabs → Tabs mit Unterstreichung; „Speichern“/„Suchen“ als Primär-Button, Rest sekundär; Aufnahme-Zustand in Warnfarbe.
+- **Leere Statuszeile** unter den Buttons → Status rechts in der Aktionsleiste (bricht auf schmalen Fenstern unter die Buttons).
+- **Breite Fenster:** Text schwebte in der Mitte (Atomic zentriert 70ch), Tabs/Buttons links → eine zentrierte Spalte (max. 780 px).
+- Editor-Text klebte am Rand → Innenabstand; Settings-Button war über die ganze Breite gezogen → links, natürliche Breite.
+- Suche: Hinweistext im Leerzustand, Trefferkarten (Snippet auf 3 Zeilen begrenzt), Abgelehnte Captures als eigene Karte.
+- Einheitliche Tokens (`--space-*`, `--radius`, Farben hell/dunkel) statt verstreuter Werte; Hover-/Fokus-Übergänge.
+- **Dev-Fehler gefunden:** Vite lieferte veraltetes CSS (fsevents-Watcher verlor unter Last Änderungen), das laufende Fenster zeigte also alten Stand. Jetzt `watch.usePolling`.
+- Absicherung: e2e-Layouttests bei 375/768/1280 px (kein horizontales Scrollen, keine Dauer-Scrollbar, keine überlappenden Buttons). Stand: typecheck ok, desktop 17 Unit-Tests, e2e 4/4.
+- Offen: Aussehen im nativen WKWebView-Fenster nicht gesehen (Bildschirm gesperrt); Chromium-Rendering ist nah dran, aber nicht identisch.
+
 ## Nachtrag: Typecheck-Gate
 Nach den Redelivery-Tests (`app.test.ts`) war `npm run typecheck` rot (TS2322): `expectUntouched` erwartete `() => Promise<Response>`, `post` liefert aber `Response | Promise<Response>` (Hono `app.request`). Fix: Parametertyp auf `() => Response | Promise<Response>` geweitet. Danach grün: typecheck (alle Workspaces), `npm test` (server 73 + 10 PG übersprungen, desktop 17, cli 5, shared 2), PG auf `picky_test` 83/83.

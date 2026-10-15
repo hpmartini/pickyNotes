@@ -132,17 +132,17 @@ export function CaptureView({ queue, send, screenshot }: Props) {
         <AtomicCodeMirrorEditor documentId={`capture-${docId}`} markdownSource={text} onMarkdownChange={setText} />
       </div>
       <div className="actions">
-        <button onClick={sendText} disabled={!text.trim()}>Speichern</button>
+        <button className="primary" onClick={sendText} disabled={!text.trim()}>Speichern</button>
         <button onClick={toggleRecording} aria-pressed={recording}>{recording ? "Stopp" : "Sprache"}</button>
         {screenshot && <button onClick={takeScreenshot}>Screenshot</button>}
         <label className="button">
           Datei
           <input type="file" hidden onChange={(e) => pickFile(e.target.files?.[0])} />
         </label>
+        <p className="status" role="status" aria-live="polite">{status}</p>
       </div>
-      <p role="status" aria-live="polite">{status}</p>
       {rejected.length > 0 && (
-        <section aria-label="Abgelehnte Captures">
+        <section className="rejected" aria-label="Abgelehnte Captures">
           <h2>Abgelehnt</h2>
           <ul>
             {rejected.map((i) => (

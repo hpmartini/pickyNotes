@@ -37,4 +37,21 @@ test("typing keeps focus, lists work, draft survives a tab switch, text is reada
   await expect(page.locator(".cm-line")).toHaveText(["•eins", "•zwei", "•eingerückt"]);
 });
 
+for (const [width, height] of [[375, 640], [768, 700], [1280, 800]]) {
+  test(`layout at ${width}px: no sideways scroll, no permanent editor scrollbar, no overlapping actions`, async ({ page }) => {
+    await page.setViewportSize({ width, height });
+    await page.goto("/");
+    await page.locator(".cm-content").click();
+    await page.keyboard.type("kurz", { delay: 10 });
+    const m = await page.evaluate(() => {
+      const d = document.documentElement;
+      const s = document.querySelector(".cm-scroller")!;
+      const r = [...document.querySelectorAll(".actions > *")].map((e) => e.getBoundingClientRect());
+      const overlap = r.some((a, i) => r.some((b, j) => i < j && a.left < b.right - 1 && b.left < a.right - 1 && a.top < b.bottom - 1 && b.top < a.bottom - 1));
+      return { hScroll: d.scrollWidth > d.clientWidth, pageVScroll: d.scrollHeight > d.clientHeight, editorScrollbar: s.scrollHeight > s.clientHeight + 1, overlap };
+    });
+    expect(m).toEqual({ hScroll: false, pageVScroll: false, editorScrollbar: false, overlap: false });
+  });
+}
+
 test.use({ colorScheme: "light" });
