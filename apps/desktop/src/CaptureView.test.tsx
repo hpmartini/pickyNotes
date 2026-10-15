@@ -11,25 +11,33 @@ const editorMounts = vi.hoisted(() => ({ count: 0 }));
 vi.mock("@atomic-editor/editor", async () => {
   const { useEffect } = await import("react");
   type P = { markdownSource: string; documentId?: string; onMarkdownChange: (s: string) => void };
-  const Inner = ({ markdownSource, onMarkdownChange }: P) => {
+  type H = { current: { getContentDOM: () => HTMLElement | null } | null };
+  const Inner = ({ markdownSource, onMarkdownChange, editorHandleRef }: P & { editorHandleRef?: H }) => {
     useEffect(() => void editorMounts.count++, []);
-    return <textarea aria-label="Editor" defaultValue={markdownSource} onChange={(e) => onMarkdownChange(e.target.value)} />;
+    return (
+      <textarea
+        aria-label="Editor"
+        defaultValue={markdownSource}
+        onChange={(e) => onMarkdownChange(e.target.value)}
+        ref={(el) => void (editorHandleRef && (editorHandleRef.current = { getContentDOM: () => el }))}
+      />
+    );
   };
   return {
-    AtomicCodeMirrorEditor: (p: P) => <Inner key={p.documentId ?? p.markdownSource} {...p} />,
+    AtomicCodeMirrorEditor: (p: P & { editorHandleRef?: H }) => <Inner key={p.documentId ?? p.markdownSource} {...p} />,
     highlightMarkdown: {}, // imported by lib/editor.ts to build editorExtensions
     tables: () => [], // editor.ts uses atomicTables()
   };
 });
 vi.mock("@atomic-editor/editor/styles.css", () => ({}));
 // whisperstorm falls through to the real browser fallback unless a test queues replies.
-const ws = vi.hoisted(() => ({ replies: [] as Array<Record<string, unknown>> }));
+const ws = vi.hoisted(() => ({ replies: [] as Array<Record<string, unknown>>, calls: [] as string[] }));
 vi.mock("./lib/tauri", async (orig) => {
   const real = await orig<typeof import("./lib/tauri")>();
-  return { ...real, whisperstorm: (cmd: "start" | "stop" | "status") => (ws.replies.length ? Promise.resolve(ws.replies.shift()) : real.whisperstorm(cmd)) };
+  return { ...real, whisperstorm: (cmd: "start" | "stop" | "status") => (ws.calls.push(cmd), ws.replies.length ? Promise.resolve(ws.replies.shift()) : real.whisperstorm(cmd)) };
 });
 
-afterEach(() => (cleanup(), localStorage.clear()));
+afterEach(() => (cleanup(), localStorage.clear(), (ws.calls.length = 0), (ws.replies.length = 0)));
 let n = 0;
 
 describe("CaptureView", () => {
@@ -187,5 +195,47 @@ describe("CaptureView", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Verwerfen" }));
     await waitFor(() => expect(screen.queryByRole("region", { name: "Abgelehnte Captures" })).toBeNull());
     expect(await bad.list()).toEqual([]);
+  });
+
+  describe("global hotkey request", () => {
+    const mount = (hotkey: { toggle: boolean } | null, onHotkeyHandled = vi.fn()) => {
+      const ui = (h: typeof hotkey) => <CaptureView queue={queue} send={vi.fn()} hotkey={h} onHotkeyHandled={onHotkeyHandled} />;
+      const queue = new CaptureQueue(`c${n++}`);
+      const r = render(ui(hotkey));
+      return { onHotkeyHandled, press: (toggle: boolean) => r.rerender(ui({ toggle })) };
+    };
+
+    it("toggle:false focuses the editor, leaves WhisperStorm alone and reports handled", () => {
+      const { onHotkeyHandled } = mount({ toggle: false });
+      expect(document.activeElement).toBe(screen.getByLabelText("Editor"));
+      expect(ws.calls).toEqual([]);
+      expect(onHotkeyHandled).toHaveBeenCalledTimes(1);
+    });
+
+    it("toggle:true starts, a second request stops and inserts via the same path as the button", async () => {
+      ws.replies.push({ ok: true, phase: "recording" }, { ok: true, phase: "success", text: "Hallo" });
+      const { press } = mount({ toggle: true });
+      expect(await screen.findByRole("button", { name: "Stopp" })).toBeTruthy();
+      press(true);
+      await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Transkript eingefügt."));
+      expect(screen.getByRole("button", { name: "Sprache" })).toBeTruthy();
+      expect(ws.calls).toEqual(["start", "stop"]);
+    });
+
+    it("toggle:true without WhisperStorm shows the error in the status line", async () => {
+      mount({ toggle: true });
+      await waitFor(() => expect(screen.getByRole("status").textContent).toBe("WhisperStorm läuft nicht"));
+    });
+
+    it("a request while start is still pending does not start twice", async () => {
+      let reply!: (r: unknown) => void;
+      ws.replies.push(new Promise((res) => (reply = res)) as never);
+      const { press } = mount({ toggle: true });
+      await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Starte Aufnahme…"));
+      press(true);
+      reply({ ok: true, phase: "recording" });
+      expect(await screen.findByRole("button", { name: "Stopp" })).toBeTruthy();
+      expect(ws.calls).toEqual(["start"]);
+    });
   });
 });

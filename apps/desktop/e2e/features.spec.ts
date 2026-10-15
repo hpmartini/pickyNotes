@@ -283,6 +283,20 @@ test("speech: Sprache starts WhisperStorm, Stopp inserts the transcript at the c
   await page.screenshot({ path: test.info().outputPath("speech-transcript.png") });
 });
 
+test("speech: the global hotkey event focuses the editor and toggles dictation (start, then stop)", async ({ page }) => {
+  await mockTauri(page, { start: { ok: true, phase: "recording" }, stop: { ok: true, phase: "idle", text: "Hallo Hotkey" } });
+  await page.goto("/");
+  await page.getByRole("button", { name: "Einstellungen" }).click(); // the hotkey must also work from another tab
+  const press = () => page.evaluate(() => window.dispatchEvent(new CustomEvent("picky:focus-capture", { detail: { toggle: true } })));
+  await press();
+  await expect(page.getByRole("button", { name: "Stopp" })).toBeVisible();
+  await expect(page.locator(".cm-content")).toBeFocused();
+  await press();
+  await expect(page.getByRole("status")).toHaveText("Transkript eingefügt.");
+  await expect.poll(() => getDraft(page)).toContain("Hallo Hotkey");
+  expect((await page.evaluate(() => (window as unknown as { __calls: unknown[][] }).__calls.filter((c) => c[0] === "whisperstorm").map((c) => c[1])))).toEqual([{ cmd: "start" }, { cmd: "stop" }]);
+});
+
 test("speech: a missing WhisperStorm shows the error and leaves the draft alone", async ({ page }) => {
   await mockTauri(page, { start: { ok: false, error: "WhisperStorm läuft nicht (kein Socket)" } });
   await page.goto("/");

@@ -17,16 +17,20 @@ async function client(): Promise<PickyClient> {
 
 export function App() {
   const [tab, setTab] = useState<Tab>("capture");
+  const [hotkey, setHotkey] = useState<{ toggle: boolean } | null>(null);
   const queue = useMemo(() => new CaptureQueue(), []);
   const send = async (i: Parameters<PickyClient["capture"]>[0]) => (await client()).capture(i);
 
   useEffect(() => {
     registerHotkey().catch(console.error);
+    // Here, not in CaptureView: it is unmounted on the other tabs and would miss the event.
+    const onHotkey = (e: Event) => (setTab("capture"), setHotkey({ toggle: !!(e as CustomEvent).detail?.toggle }));
+    window.addEventListener("picky:focus-capture", onHotkey);
     const flush = () => void queue.flush(send).catch(() => {});
     window.addEventListener("online", flush);
     const timer = setInterval(flush, 30_000);
     flush();
-    return () => (window.removeEventListener("online", flush), clearInterval(timer));
+    return () => (window.removeEventListener("online", flush), window.removeEventListener("picky:focus-capture", onHotkey), clearInterval(timer));
   }, [queue]);
 
   return (
@@ -38,7 +42,7 @@ export function App() {
           </button>
         ))}
       </nav>
-      {tab === "capture" && <CaptureView queue={queue} send={send} screenshot={screenshot} />}
+      {tab === "capture" && <CaptureView queue={queue} send={send} screenshot={screenshot} hotkey={hotkey} onHotkeyHandled={() => setHotkey(null)} />}
       {tab === "search" && <SearchView search={async (q) => (await (await client()).search(q)).hits} />}
       {tab === "settings" && <Settings />}
     </main>

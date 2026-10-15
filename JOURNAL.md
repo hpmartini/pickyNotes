@@ -324,3 +324,12 @@ Mehrere Review-Funde waren veraltet (Rust-Command, CaptureView-Verdrahtung, Serv
 **Fix (WhisperStorm 9aaba4e):** `AudioCaptureEngine` auf `AVCaptureSession`/`AVCaptureAudioDataOutput` umgestellt (input-only), `start` ist async und läuft nicht auf dem Main-Actor, Buffer werden ab dem ersten Callback angenommen. Neu nach `/Applications/WhisperStorm.app` installiert.
 **Beleg:** Socket-Test 3 Läufe: Fehler 35 weg, `samples=39401 / 37285` bei ~2,5 s; erster Lauf nach App-Start kann bis ~2,5 s verzögert beginnen (Wave:3-Warmup).
 **Nicht verifiziert:** Hotkey-/PTT-Pfad (nur vom Nutzer auslösbar); Zusammenarbeit mit Peer-Session `whisperstorm-mic-detection` (Gegenprüfung des Diffs steht aus).
+
+## Diktat-Hotkey Ctrl+Alt+Space (2026-10-15)
+
+- `registerHotkey()` registriert zwei Kürzel mit einem Handler: `CommandOrControl+Shift+Space` (nur nach vorn) und `Control+Alt+Space` (nach vorn + Diktat umschalten). Handler: show/unminimize/setFocus, dann `CustomEvent("picky:focus-capture", {detail: {toggle}})`. Jedes Kürzel hat eigenes try/catch; ein belegtes Kürzel wird per `console.warn` geloggt, das andere läuft weiter.
+- `App` hört auf das Event (CaptureView ist auf den anderen Tabs unmounted), wechselt auf „Erfassen“ und reicht `hotkey` als Prop herunter; `CaptureView` fokussiert den Editor und ruft bei `toggle` dasselbe `toggleRecording` wie der Button. Der Guard `if (starting) return;` wanderte in die Funktion, damit Hotkey und Klick ihn teilen (Doppel-`start` während der Mikrofon-Abfrage).
+- **Annahmen:** Toggle statt Push-to-talk (so im Auftrag vorgegeben; Released wird ignoriert); wirkt nur, solange der App-Prozess läuft; `capabilities/default.json` unverändert (allow-register/is-registered und Fenster-Rechte waren schon da).
+- **Bekannte Grenzen:** Aufnahmestatus liegt in `CaptureView`; Tabwechsel während der Aufnahme unmountet die Ansicht, der nächste Druck sendet dann `start` statt `stop` (gilt schon für den Button). Ein zweiter Druck während `stop` (Transkription) sendet erneut `stop`. `isRegistered` kennt nur eigene Registrierungen; ein stilles Verschlucken durch das OS ist nicht erkennbar.
+- **Nicht verifiziert:** echtes globales Kürzel im nativen Fenster (keine Bedienungshilfen-Berechtigung); Kollision mit Eingabequellen-Kürzeln von macOS.
+- **Belege:** Unit desktop 119/119 (neu: `lib/tauri.test.ts`, 4 Hotkey-Fälle in `CaptureView.test.tsx`; Mutationstest ohne Guard rot), tsc 0, e2e 57/57 (neu: Hotkey-Event von Einstellungen-Tab).

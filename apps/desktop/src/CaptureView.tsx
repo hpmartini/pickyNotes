@@ -31,9 +31,12 @@ interface Props {
   queue: CaptureQueue;
   send: Send;
   screenshot?: () => Promise<string | null>;
+  /** Global hotkey request: focus the editor, and start/stop dictation when `toggle`. */
+  hotkey?: { toggle: boolean } | null;
+  onHotkeyHandled?: () => void;
 }
 
-export function CaptureView({ queue, send, screenshot }: Props) {
+export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled }: Props) {
   const [text, setText] = useState(loadDraft);
   useEffect(() => saveDraft(text), [text]);
   const textRef = useRef(text);
@@ -106,6 +109,7 @@ export function CaptureView({ queue, send, screenshot }: Props) {
   }
 
   async function toggleRecording() {
+    if (starting) return; // shared by button and hotkey
     if (recording) {
       try {
         const r = await whisperstorm("stop");
@@ -135,6 +139,15 @@ export function CaptureView({ queue, send, screenshot }: Props) {
       setStarting(false);
     }
   }
+
+  const toggleRef = useRef(toggleRecording);
+  toggleRef.current = toggleRecording;
+  useEffect(() => {
+    if (!hotkey) return;
+    editorRef.current?.getContentDOM()?.focus();
+    if (hotkey.toggle) void toggleRef.current();
+    onHotkeyHandled?.();
+  }, [hotkey]); // eslint-disable-line react-hooks/exhaustive-deps -- onHotkeyHandled only clears the request
 
   async function insertAttachment(file: { name: string; mime: string; bytes: Uint8Array }) {
     const view = getView();
