@@ -291,3 +291,19 @@ Mehrere Review-Funde waren veraltet (Rust-Command, CaptureView-Verdrahtung, Serv
 - Server: Anhänge heißen `<noteId>-<attachmentId>-<name>`; zwei `screenshot.png` überschrieben sich vorher (beide Links zeigten auf die letzte Datei). Tests: zwei Dateien/zwei Links, Retry mit gleicher `clientId` ohne Duplikat. WhisperStorm: `stop` wartet auf dem Socket-Thread statt im Hauptthread (vorher blockierte das die Transkription, jede Aufnahme endete in „transcription timeout“); `deliveryMode = .socket` bis success/error. **Echt geprüft:** `start`, 2,5 s, `stop` gegen die neu gebaute App → `phase: success`, Transkript nach 1,1 s (Raumgeräusch: „Okay.“). Rust: `whisperstorm_at(path, cmd)`, beide Tests rufen den Produktionscode.
 - e2e: PDF-Drop (Draft, Chip, gestashte Bytes, Screenshot); je Ausrichtung ein eigener Screenshot. Stash behält nach dem Speichern Links, die der Live-Entwurf noch enthält. Chip-Guard für Code war wirkungslos (`inside()` liefert in Code immer false) → `inCodeSpan`; Randfall Blockanfang bei eingerücktem Code behoben (betraf auch `:emoji:`).
 - Gates: typecheck 0; Unit server 85 (+10 PG übersprungen) / cli 5 / shared 2 / desktop 89; e2e 56; `cargo test` 2; WhisperStorm Release baut. `npm test` war unter Node 26 rot (Node-eigenes `localStorage` überlagert jsdom): `--no-experimental-webstorage` in `vite.config.ts`. Offen: `start` antwortet mit der Phase vor dem Start (`idle`); ein Client, der nur `start` sendet, lässt die Socket-Auslieferung bis zum nächsten `stop` an.
+
+## Zyklus 3: Review-Minors (Branch `md-features`)
+
+| Punkt | Stand | Beleg |
+|:--|:--|:--|
+| Anhangsname-Kollision (Blocker) | schon in e1630ce behoben (`sha256(id)[0:16]`, doppelte ID → 400); Test prüft jetzt beide umgeschriebenen Links, Dateien und Bytes | `app.test.ts` „ids that differ only by '-'…“ |
+| Anhang-ID-Zeichensatz | `CaptureAttachment.id` = `^[A-Za-z0-9_-]{1,100}$` (= Regex der Link-Umschreibung); `openapi.json` neu | „an id outside … is rejected“ |
+| `whisperstorm` async | `async fn` + `spawn_blocking`, JoinError → `Err(String)`; Client liest bis `\n` statt EOF | Rust-Test „returns on the newline without waiting for eof“ |
+| Fence ArrowDown | bewegt nur den Cursor; Text nur, wenn der Block das Dokumentende ist; umgebrochene Zeile außerhalb der letzten visuellen Zeile → CM bewegt selbst (`coordsAtPos`) | `editor.test.tsx` „Fence ArrowDown exit…“ |
+| Paste | nur reines Datei-Clipboard; Finder (Name/Pfad in `text/plain`) und Browser-Bildkopie (`<img>` only) bleiben Anhang | „Paste intercepts pure file clipboards only“ |
+| Tabellen-Leiste | Zeile/Spalte aus fokussierter Widget-Zelle bzw. Quell-Cursor; vier Aktionen dort | „Table toolbar acts on the cursor's row and column“ |
+| Socket-Härtung | Ordner 0700, `umask(077)` um `bind`, 64 KB, 5 s `SO_RCVTIMEO`, `\n` pro Antwort; `start` wartet auf `startDictation()` (30 s), bei Timeout wird die spät startende Aufnahme abgebrochen | echt: `stat` drwx------ / srw-------, `status`-Antwort mit `\n`, 100 KB → `request too large` |
+| Leeres Transkript | „Kein Text erkannt – nichts eingefügt.“ | `CaptureView.test.tsx` (leer, nur Whitespace, Text) |
+| Inline-Extraktion | Job `extract-inline` für image/* und PDF; Marker `<!-- extract:<pfad> -->`…`<!-- /extract -->`, idempotent; Text zählt nicht als eigene Eingabe (`@claude` darin läuft nie, Mutationstest) | `app.test.ts` „inline image/PDF attachments…“ |
+
+**Vertagt:** Der Umbruch-Guard der Fence-Navigation braucht Layout und ist in jsdom nicht prüfbar (nur e2e/visuell). Der Idle-Timeout (5 s) des Sockets ist nicht live gemessen (gesetzt per `setsockopt`). Echtes WebKit-Clipboard (Finder-Kopie) nicht automatisiert. `extract-inline` kann nach `curate` fertig werden: der Text ist indiziert, die Zusammenfassung kennt ihn dann nicht.
