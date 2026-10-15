@@ -183,6 +183,8 @@ describe("Obsidian/Notion parity (src/lib/editor.ts)", () => {
     ["1. a\n2. ", "1. a\n"],
     ["- [ ] a\n- [ ] ", "- [ ] a\n"],
     ["- a\n  - ", "- a\n"],
+    ["text\n- ", "text\n"],
+    ["text\n1. ", "text\n"],
   ])("Backspace on the empty marker of %j drops the whole marker", (typed, expected) => {
     const view = mount(typed);
     view.dispatch({ selection: { anchor: view.state.doc.length } });

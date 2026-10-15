@@ -8,17 +8,17 @@ import { EditorView, keymap } from "@codemirror/view";
 // shortcut: duplicates Atomic Editor's internal markdown({base: markdownLanguage, extensions: [highlightMarkdown]}) to add {remove: ["SetextHeading"]}; Prec.high wins over the built-in language facet; drop once Atomic Editor accepts lezer extensions.
 const parser = markdown({ base: markdownLanguage, extensions: [highlightMarkdown, { remove: ["SetextHeading"] }] }).language;
 
-/** True when `pos` sits inside a `name` node that is not itself inside code (a "- " in a fence is literal text). */
-function inside(state: EditorState, pos: number, name: string): boolean {
+/** True when `pos` sits inside a `name` node (any node when omitted) that is not itself inside code (a "- " in a fence is literal text). */
+function inside(state: EditorState, pos: number, name?: string): boolean {
   for (let n: ReturnType<ReturnType<typeof syntaxTree>["resolveInner"]> | null = syntaxTree(state).resolveInner(pos, -1); n; n = n.parent) {
     if (n.name === "FencedCode" || n.name === "CodeBlock") return false;
     if (n.name === name) return true;
   }
-  return false;
+  return !name;
 }
 
 /** Replaces the cursor's whole line with "" when it matches `marker` (cursor at its end) and sits inside `node`. */
-const clearEmptyMarker = (marker: RegExp, node: string) => (view: EditorView): boolean => {
+const clearEmptyMarker = (marker: RegExp, node?: string) => (view: EditorView): boolean => {
   const { state } = view;
   const { head, empty } = state.selection.main;
   const line = state.doc.lineAt(head);
@@ -67,8 +67,8 @@ const plainEmphasisChars = EditorView.inputHandler.of((view, from, to, text) => 
 });
 
 const leaveEmptyItemOrQuote = keymap.of([
-  // Backspace on an empty bullet/number/task marker drops the whole marker (markdown's default leaves indent spaces that nest the next list).
-  { key: "Backspace", run: clearEmptyMarker(emptyListMarker, "ListItem") },
+  // Backspace on an empty bullet/number/task marker drops the whole marker, also directly under a paragraph where Lezer sees no ListItem (markdown's default leaves indent spaces that nest the next list).
+  { key: "Backspace", run: clearEmptyMarker(emptyListMarker) },
 ]);
 
 // Enter on an empty list/quote marker is handled by a Prec.highest keydown listener above; plain Enter (continuation) is left to Atomic + markdown.
