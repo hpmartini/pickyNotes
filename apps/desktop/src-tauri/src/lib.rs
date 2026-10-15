@@ -1,5 +1,5 @@
 use base64::{engine::general_purpose::STANDARD, Engine};
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Duration;
@@ -62,9 +62,12 @@ struct WhisperReply {
 /// Sends one JSON request to the WhisperStorm control socket and returns the parsed reply.
 /// `stop` may take seconds while the transcript is computed, so the read timeout is generous.
 /// A missing socket or refused connection answers with `{ ok: false, error: "WhisperStorm läuft nicht" }` so the UI can show a clear message.
+/// Async + spawn_blocking: `stop` can block up to 120 s and must not occupy the main thread.
 #[tauri::command]
-fn whisperstorm(cmd: String) -> Result<WhisperReply, String> {
-    whisperstorm_at(Path::new(&whisperstorm_socket_path()), &cmd)
+async fn whisperstorm(cmd: String) -> Result<WhisperReply, String> {
+    tauri::async_runtime::spawn_blocking(move || whisperstorm_at(Path::new(&whisperstorm_socket_path()), &cmd))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// The socket exchange behind the command, with the path as a parameter so tests can use a fake listener.
@@ -78,8 +81,9 @@ fn whisperstorm_at(path: &Path, cmd: &str) -> Result<WhisperReply, String> {
     stream.set_write_timeout(Some(Duration::from_secs(5))).map_err(|e| e.to_string())?;
     let req = format!("{}\n", serde_json::json!({ "cmd": cmd }));
     stream.write_all(req.as_bytes()).map_err(|e| e.to_string())?;
+    // Replies are newline-terminated; read one line instead of waiting for EOF.
     let mut buf = String::new();
-    stream.read_to_string(&mut buf).map_err(|e| e.to_string())?;
+    BufReader::new(&stream).read_line(&mut buf).map_err(|e| e.to_string())?;
     let parsed: serde_json::Value = serde_json::from_str(&buf).map_err(|e| e.to_string())?;
     Ok(WhisperReply {
         ok: parsed.get("ok").and_then(|v| v.as_bool()).unwrap_or(false),
@@ -111,7 +115,6 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::{BufRead, BufReader};
     use std::os::unix::net::UnixListener;
 
     fn temp_sock(name: &str) -> std::path::PathBuf {
@@ -141,6 +144,26 @@ mod tests {
         let reply = whisperstorm_at(&sock, "stop").unwrap();
         assert_eq!(server.join().unwrap(), "{\"cmd\":\"stop\"}\n");
         assert_eq!(reply, WhisperReply { ok: true, phase: Some("success".into()), text: Some("Hallo Welt".into()), error: None });
+        let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+    }
+
+    #[test]
+    fn whisperstorm_at_returns_on_the_newline_without_waiting_for_eof() {
+        let sock = temp_sock("newline");
+        let listener = UnixListener::bind(&sock).unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut s, _) = listener.accept().unwrap();
+            let mut line = String::new();
+            BufReader::new(s.try_clone().unwrap()).read_line(&mut line).unwrap();
+            s.write_all(b"{\"ok\":true,\"phase\":\"idle\"}\n").unwrap();
+            // Keep the connection open: the client must not depend on EOF.
+            std::thread::sleep(Duration::from_secs(3));
+        });
+        let started = std::time::Instant::now();
+        let reply = whisperstorm_at(&sock, "status").unwrap();
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(reply, WhisperReply { ok: true, phase: Some("idle".into()), text: None, error: None });
+        server.join().unwrap();
         let _ = std::fs::remove_dir_all(sock.parent().unwrap());
     }
 
