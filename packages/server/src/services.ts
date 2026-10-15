@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { access } from "node:fs/promises";
 import { ulid } from "ulid";
 import type { CaptureInput, MailCapture, SearchHit, WebhookEvent } from "@pickynotes/shared";
@@ -112,17 +113,18 @@ export async function capture(deps: Deps, input: CaptureInput): Promise<{ id: st
 
 /**
  * Stores each inline attachment and rewrites `pending:<attachmentId>` references in the body
- * to `raw/attachments/<noteId>-<attachmentId>-<safe-name>` (vault-relative). Unknown IDs are left as-is so a
+ * to `raw/attachments/<noteId>-<sha256(attachmentId)[0:16]>-<safe-name>` (vault-relative). Unknown IDs are left as-is so a
  * truncated payload doesn't silently drop the user's references.
  */
 async function storeAttachmentsAndRewrite(deps: Deps, noteId: string, body: string, attachments?: { id: string; name: string; mime: string; data: string }[]): Promise<string> {
   if (!attachments || attachments.length === 0) return body;
+  if (new Set(attachments.map((a) => a.id)).size !== attachments.length) throw new BadCaptureError("duplicate attachment id");
   const paths = new Map<string, string>();
   for (const a of attachments) {
     const bytes = Buffer.from(a.data, "base64");
     if (bytes.length > deps.maxAttachmentBytes) throw new PayloadTooLargeError(`attachment exceeds ${deps.maxAttachmentBytes} bytes`);
-    // The attachment id is part of the stored name: same-named payloads (two screenshot.png) must not overwrite each other. The id is client input, so it is reduced to [\w-].
-    const rel = await deps.vault.writeAttachment(`${noteId}-${a.id.replace(/[^\w-]/g, "_")}`, a.name, bytes);
+    // Same-named payloads (two screenshot.png) must not overwrite each other. The id is client input: a fixed-length hex digest is path-safe and keeps id and name unambiguous (no "-" or sanitizing collisions).
+    const rel = await deps.vault.writeAttachment(`${noteId}-${createHash("sha256").update(a.id).digest("hex").slice(0, 16)}`, a.name, bytes);
     paths.set(a.id, rel);
   }
   return body.replace(/pending:([a-zA-Z0-9_-]+)/g, (match, id: string) => paths.get(id) ?? match);
