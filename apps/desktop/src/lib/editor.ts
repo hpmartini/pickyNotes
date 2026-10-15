@@ -308,21 +308,30 @@ function tableCursor(view: EditorView): { row: number; col: number } | null {
 const spliced = (a: string[], i: number, del: number, ...ins: string[]) => { const c = [...a]; c.splice(i, del, ...ins); return c; };
 const fmtRow = (cells: string[]) => "| " + cells.map((c) => c || " ").join(" | ") + " |";
 
-/** Rewrite the table under the cursor: `edit` maps the source lines (given the cursor row/col) to the new lines, or null for a no-op. */
-function editTable(view: EditorView, edit: (lines: string[], cur: { row: number; col: number }, cols: number) => string[] | null, caretLine?: (cur: { row: number }) => number): void {
+/** Offset of the first character of cell `col` in a source row (after its `| `). */
+function cellOffset(line: string, col: number): number {
+  let n = -1;
+  for (let i = 0; i < line.length; i++) {
+    if (line[i] === "|" && line[i - 1] !== "\\" && ++n === col) return Math.min(i + 2, line.length);
+  }
+  return line.length;
+}
+
+/** Rewrite the table under the cursor: `edit` maps the source lines (given the cursor row/col) to the new lines and where the caret goes, or null for a no-op. */
+function editTable(view: EditorView, edit: (lines: string[], cur: { row: number; col: number }, cols: number) => { lines: string[]; at: { row: number; col: number } } | null): void {
   const t = readTableAt(view.state, tablePos(view));
   const cur = tableCursor(view);
   if (!t || !cur || t.lines.length < 2) return;
-  const lines = edit(t.lines, cur, splitRow(t.lines[0]!).length);
-  if (!lines) return;
-  const caret = caretLine ? t.from + lines.slice(0, caretLine(cur)).reduce((n, l) => n + l.length + 1, 0) + 2 : t.from;
-  view.dispatch({ changes: { from: t.from, to: t.to, insert: lines.join("\n") }, selection: { anchor: caret }, annotations: ownTableEdit.of(true) });
+  const out = edit(t.lines, cur, splitRow(t.lines[0]!).length);
+  if (!out) return;
+  const row = Math.min(out.at.row, out.lines.length - 1);
+  const caret = t.from + out.lines.slice(0, row).reduce((n, l) => n + l.length + 1, 0) + cellOffset(out.lines[row]!, out.at.col);
+  view.dispatch({ changes: { from: t.from, to: t.to, insert: out.lines.join("\n") }, selection: { anchor: caret }, annotations: ownTableEdit.of(true) });
   view.focus();
 }
 
 /** Insert (`add`) or delete (`!add`) the current column in header, delimiter and body rows; cells are padded to the header width first. */
-function editColumn(lines: string[], col: number, cols: number, add: boolean): string[] | null {
-  if (!add && cols <= 1) return null;
+function editColumn(lines: string[], col: number, cols: number, add: boolean): string[] {
   const mapRow = (cells: string[], fresh: string) => {
     const c = [...cells, ...Array(Math.max(0, cols - cells.length)).fill("")];
     if (add) c.splice(col + 1, 0, fresh); else c.splice(col, 1);
@@ -395,14 +404,17 @@ const tableToolbar = ViewPlugin.fromClass(
         return b;
       };
       this.dom.append(
-        mkBtn("⊕ Zeile", "Zeile unter der aktuellen einfügen", () => {
-          const at = (cur: { row: number }) => Math.max(cur.row, 1) + 1;
-          editTable(v, (lines, cur, cols) => spliced(lines, at(cur), 0, fmtRow(Array(cols).fill(""))), at);
-        }),
+        mkBtn("⊕ Zeile", "Zeile unter der aktuellen einfügen", () =>
+          editTable(v, (lines, cur, cols) => {
+            const row = Math.max(cur.row, 1) + 1;
+            return { lines: spliced(lines, row, 0, fmtRow(Array(cols).fill(""))), at: { row, col: 0 } };
+          })),
         mkBtn("⊖ Zeile", "Aktuelle Zeile entfernen", () =>
-          editTable(v, (lines, cur) => (cur.row < 2 || lines.length <= 3 ? null : spliced(lines, cur.row, 1)))),
-        mkBtn("⊕ Spalte", "Spalte rechts der aktuellen einfügen", () => editTable(v, (lines, cur, cols) => editColumn(lines, cur.col, cols, true))),
-        mkBtn("⊖ Spalte", "Aktuelle Spalte entfernen", () => editTable(v, (lines, cur, cols) => editColumn(lines, cur.col, cols, false))),
+          editTable(v, (lines, cur) => (cur.row < 2 || lines.length <= 3 ? null : { lines: spliced(lines, cur.row, 1), at: cur }))),
+        mkBtn("⊕ Spalte", "Spalte rechts der aktuellen einfügen", () =>
+          editTable(v, (lines, cur, cols) => ({ lines: editColumn(lines, cur.col, cols, true), at: { row: cur.row, col: cur.col + 1 } }))),
+        mkBtn("⊖ Spalte", "Aktuelle Spalte entfernen", () =>
+          editTable(v, (lines, cur, cols) => (cols <= 1 ? null : { lines: editColumn(lines, cur.col, cols, false), at: { row: cur.row, col: Math.min(cur.col, cols - 2) } }))),
         mkBtn("⇤ L", "Spalten linksbündig ausrichten", () => applyDelimiterChange(v, (s) => s.map((c) => ({ ...c, align: "L" as const })))),
         mkBtn("⇔ C", "Spalten zentrieren", () => applyDelimiterChange(v, (s) => s.map((c) => ({ ...c, align: "C" as const })))),
         mkBtn("⇥ R", "Spalten rechtsbündig ausrichten", () => applyDelimiterChange(v, (s) => s.map((c) => ({ ...c, align: "R" as const })))),

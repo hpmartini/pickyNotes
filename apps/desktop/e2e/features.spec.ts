@@ -171,8 +171,8 @@ test("table: alignment shows in the DOM, survives cell edits, toolbar controls c
   await click("⊕ Zeile");
   await expect.poll(async () => (await getDraft(page)).split("\n").length).toBe(4);
   await click("⊕ Spalte");
-  await expect.poll(async () => (await getDraft(page)).split("\n")[0]).toBe("| a | b | c | Spalte |");
-  expect((await getDraft(page)).split("\n")[1]).toBe("| :--- | :---: | ---: | --- |");
+  await expect.poll(async () => (await getDraft(page)).split("\n")[0]).toBe("| a | Spalte | b | c |"); // after the cursor column (the new row's first cell)
+  expect((await getDraft(page)).split("\n")[1]).toBe("| :--- | --- | :---: | ---: |");
   await click("⊖ Spalte");
   await click("⊖ Zeile");
   await expect.poll(async () => (await getDraft(page)).split("\n").length).toBe(3);

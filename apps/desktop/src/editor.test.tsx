@@ -526,6 +526,16 @@ describe("Table toolbar acts on the cursor's row and column", () => {
     expect(click("Spalte rechts der aktuellen einfügen", 3, 1)).toBe(
       "| a | b | Spalte | c |\n| :--- | :---: | --- | ---: |\n| 1 | 2 |   | 3 |\n| 4 | 5 |   | 6 |\n| 7 | 8 |   | 9 |");
   });
+  it("the caret stays in the edited row, in the new column (so a second click acts on it)", () => {
+    const view = mount(SRC);
+    const l = view.state.doc.line(4); // "| 4 | 5 | 6 |", cursor in the middle cell
+    view.dispatch({ selection: { anchor: l.from + l.text.indexOf("5") } });
+    view.dom.parentElement!.querySelector<HTMLElement>('button[title="Spalte rechts der aktuellen einfügen"]')!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    const head = view.state.selection.main.head;
+    const line = view.state.doc.lineAt(head);
+    expect(line.text).toBe("| 4 | 5 |   | 6 |");
+    expect(head - line.from).toBe("| 4 | 5 | ".length);
+  });
   it("⊖ Spalte removes the cursor column (middle) from every row", () => {
     expect(click("Aktuelle Spalte entfernen", 3, 1)).toBe("| a | c |\n| :--- | ---: |\n| 1 | 3 |\n| 4 | 6 |\n| 7 | 9 |");
   });
