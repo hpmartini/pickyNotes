@@ -223,6 +223,34 @@ test("paste/drop: a PDF becomes a [name](pending:id) chip, a dropped image previ
   await page.getByRole("button", { name: /Speichern|Senden/ }).count();
 });
 
+test("drop: a PDF dropped at the cursor becomes a [name](pending:id) chip and its bytes are stashed", async ({ page }) => {
+  await page.goto("/");
+  await page.locator(".cm-content").click();
+  await steps(page, "pdf-drop", [..."vor", { key: "Enter" }]);
+  await page.evaluate(() => {
+    const dt = new DataTransfer();
+    dt.items.add(new File([new Uint8Array([0x25, 0x50, 0x44, 0x46, 0x2d, 0x31])], "vertrag.pdf", { type: "application/pdf" }));
+    const el = document.querySelector(".cm-content")!;
+    const r = [...document.querySelectorAll(".cm-line")].at(-1)!.getBoundingClientRect(); // drop point = the empty last line
+    el.dispatchEvent(new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true, clientX: r.left + 5, clientY: r.top + r.height / 2 }));
+  });
+  await expect.poll(() => getDraft(page)).toMatch(/^vor\n\[vertrag\.pdf\]\(pending:[a-f0-9-]+\)\n?$/);
+  await expect(page.locator(".cm-pn-file-chip")).toHaveText("📎 vertrag.pdf");
+  await expect(page.locator(".cm-content .cm-atomic-image")).toHaveCount(0); // a file, not an image preview
+  const id = /pending:([a-f0-9-]+)/.exec(await getDraft(page))![1];
+  const stored = await page.evaluate((key) => new Promise<{ name: string; mime: string; bytes: number[] }>((resolve, reject) => {
+    const open = indexedDB.open("pickynotes-attachments", 1);
+    open.onerror = () => reject(open.error);
+    open.onsuccess = () => {
+      const get = open.result.transaction("attachments").objectStore("attachments").get(key);
+      get.onsuccess = () => resolve({ name: get.result.name, mime: get.result.mime, bytes: [...get.result.bytes] });
+      get.onerror = () => reject(get.error);
+    };
+  }), id);
+  expect(stored).toEqual({ name: "vertrag.pdf", mime: "application/pdf", bytes: [0x25, 0x50, 0x44, 0x46, 0x2d, 0x31] });
+  await page.locator(".editor").screenshot({ path: test.info().outputPath("pdf-drop.png") });
+});
+
 const PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
 /** Pretends to be the Tauri webview: `invoke` answers from `window.__ws`/`__png`, records every call in `window.__calls`. */

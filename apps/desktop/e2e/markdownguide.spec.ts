@@ -113,7 +113,7 @@ test("markdownguide: table typed header, Enter, cells with Tab; alignment via th
     await page.locator(".cm-pn-table-toolbar").getByRole("button", { name }).dispatchEvent("mousedown");
     await expect.poll(async () => (await draft(page)).split("\n")[1]).toBe(expectDelim);
     await expect.poll(() => page.locator(".cm-atomic-table td").evaluateAll((t) => t.map((c) => getComputedStyle(c).textAlign))).toEqual([align, align]);
-    await shot(page, "table", 21);
+    await shot(page, `table-${align}`, 21);
   }
   expect((await draft(page)).split("\n")).toEqual(["| a | b |", "| :--- | :--- |", "| 1 | 2 |"]);
 });
