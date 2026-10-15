@@ -284,6 +284,56 @@ const tableAlignment = ViewPlugin.fromClass(
   },
 );
 
+/** Where the user is in the table: `row` is the source line (0 header, 1 delimiter, >=2 body), `col` the cell index. Focused Atomic widget cell first, else the source cursor. */
+function tableCursor(view: EditorView): { row: number; col: number } | null {
+  const t = readTableAt(view.state, tablePos(view));
+  if (!t) return null;
+  const cols = splitRow(t.lines[0]!).length;
+  const clamp = (n: number, max: number) => Math.max(0, Math.min(n, max));
+  const active = document.activeElement;
+  const wrap = active?.closest?.(".cm-atomic-table");
+  const cell = active?.closest?.("th, td") as HTMLTableCellElement | null | undefined;
+  if (wrap && cell && view.contentDOM.contains(wrap)) {
+    const i = [...wrap.querySelectorAll("tr")].indexOf(cell.closest("tr")!);
+    if (i >= 0) return { row: i === 0 ? 0 : i + 1, col: clamp(cell.cellIndex, cols - 1) };
+  }
+  const { doc } = view.state;
+  const head = view.state.selection.main.head;
+  const line = doc.lineAt(clamp(head, doc.length));
+  const before = doc.sliceString(line.from, head).replace(/\\\|/g, "");
+  const pipes = (before.match(/\|/g) ?? []).length - (/^\s*\|/.test(line.text) ? 1 : 0);
+  return { row: clamp(line.number - doc.lineAt(t.from).number, t.lines.length - 1), col: clamp(pipes, cols - 1) };
+}
+
+const spliced = (a: string[], i: number, del: number, ...ins: string[]) => { const c = [...a]; c.splice(i, del, ...ins); return c; };
+const fmtRow = (cells: string[]) => "| " + cells.map((c) => c || " ").join(" | ") + " |";
+
+/** Rewrite the table under the cursor: `edit` maps the source lines (given the cursor row/col) to the new lines, or null for a no-op. */
+function editTable(view: EditorView, edit: (lines: string[], cur: { row: number; col: number }, cols: number) => string[] | null, caretLine?: (cur: { row: number }) => number): void {
+  const t = readTableAt(view.state, tablePos(view));
+  const cur = tableCursor(view);
+  if (!t || !cur || t.lines.length < 2) return;
+  const lines = edit(t.lines, cur, splitRow(t.lines[0]!).length);
+  if (!lines) return;
+  const caret = caretLine ? t.from + lines.slice(0, caretLine(cur)).reduce((n, l) => n + l.length + 1, 0) + 2 : t.from;
+  view.dispatch({ changes: { from: t.from, to: t.to, insert: lines.join("\n") }, selection: { anchor: caret }, annotations: ownTableEdit.of(true) });
+  view.focus();
+}
+
+/** Insert (`add`) or delete (`!add`) the current column in header, delimiter and body rows; cells are padded to the header width first. */
+function editColumn(lines: string[], col: number, cols: number, add: boolean): string[] | null {
+  if (!add && cols <= 1) return null;
+  const mapRow = (cells: string[], fresh: string) => {
+    const c = [...cells, ...Array(Math.max(0, cols - cells.length)).fill("")];
+    if (add) c.splice(col + 1, 0, fresh); else c.splice(col, 1);
+    return c;
+  };
+  const delim = readDelimiter(lines[1]!);
+  while (delim.length < cols) delim.push({ align: "none", dashes: 3 });
+  if (add) delim.splice(col + 1, 0, { align: "none", dashes: 3 }); else delim.splice(col, 1);
+  return [fmtRow(mapRow(splitRow(lines[0]!), "Spalte")), formatDelimiter(delim), ...lines.slice(2).map((l) => fmtRow(mapRow(splitRow(l), "")))];
+}
+
 /** Apply a per-column transform (alignment / dashes) over the table under the cursor. */
 function applyDelimiterChange(view: EditorView, change: (spec: Array<{ align: "L" | "C" | "R" | "none"; dashes: number }>, headerLen: number) => Array<{ align: "L" | "C" | "R" | "none"; dashes: number }>): void {
   const t = readTableAt(view.state, tablePos(view));
@@ -346,48 +396,13 @@ const tableToolbar = ViewPlugin.fromClass(
       };
       this.dom.append(
         mkBtn("⊕ Zeile", "Zeile unter der aktuellen einfügen", () => {
-          const t = readTableAt(v.state, tablePos(v)); if (!t) return;
-          const header = splitRow(t.lines[0]!);
-          const row = "| " + header.map(() => " ").join(" | ") + " |";
-          v.dispatch({ changes: { from: t.to, insert: "\n" + row }, selection: { anchor: t.to + row.length - 1 } });
-          v.focus();
+          const at = (cur: { row: number }) => Math.max(cur.row, 1) + 1;
+          editTable(v, (lines, cur, cols) => spliced(lines, at(cur), 0, fmtRow(Array(cols).fill(""))), at);
         }),
-        mkBtn("⊖ Zeile", "Letzte Zeile entfernen", () => {
-          const t = readTableAt(v.state, tablePos(v)); if (!t || t.lines.length <= 3) return;
-          const lastLineStart = t.to - t.lines[t.lines.length - 1]!.length;
-          v.dispatch({ changes: { from: lastLineStart - 1, to: t.to } });
-          v.focus();
-        }),
-        mkBtn("⊕ Spalte", "Spalte rechts einfügen", () => {
-          const t = readTableAt(v.state, tablePos(v)); if (!t || t.lines.length < 2) return;
-          const header = splitRow(t.lines[0]!);
-          const delim = readDelimiter(t.lines[1]!);
-          const newHeader = [...header, "Spalte"];
-          const newDelim = [...delim, { align: "none" as const, dashes: 3 }];
-          const newBody = t.lines.slice(2).map((line) => {
-            const cells = splitRow(line);
-            while (cells.length < newHeader.length - 1) cells.push("");
-            cells.push("");
-            return "| " + cells.map((c) => c || " ").join(" | ") + " |";
-          });
-          const newText = ["| " + newHeader.join(" | ") + " |", formatDelimiter(newDelim), ...newBody].join("\n");
-          v.dispatch({ changes: { from: t.from, to: t.to, insert: newText }, selection: { anchor: t.from } });
-          v.focus();
-        }),
-        mkBtn("⊖ Spalte", "Letzte Spalte entfernen", () => {
-          const t = readTableAt(v.state, tablePos(v)); if (!t || t.lines.length < 2) return;
-          const header = splitRow(t.lines[0]!); if (header.length <= 1) return;
-          const newHeader = header.slice(0, -1);
-          const newDelim = readDelimiter(t.lines[1]!).slice(0, -1);
-          const newBody = t.lines.slice(2).map((line) => {
-            const cells = splitRow(line);
-            cells.pop();
-            return "| " + cells.map((c) => c || " ").join(" | ") + " |";
-          });
-          const newText = ["| " + newHeader.join(" | ") + " |", formatDelimiter(newDelim), ...newBody].join("\n");
-          v.dispatch({ changes: { from: t.from, to: t.to, insert: newText }, selection: { anchor: t.from } });
-          v.focus();
-        }),
+        mkBtn("⊖ Zeile", "Aktuelle Zeile entfernen", () =>
+          editTable(v, (lines, cur) => (cur.row < 2 || lines.length <= 3 ? null : spliced(lines, cur.row, 1)))),
+        mkBtn("⊕ Spalte", "Spalte rechts der aktuellen einfügen", () => editTable(v, (lines, cur, cols) => editColumn(lines, cur.col, cols, true))),
+        mkBtn("⊖ Spalte", "Aktuelle Spalte entfernen", () => editTable(v, (lines, cur, cols) => editColumn(lines, cur.col, cols, false))),
         mkBtn("⇤ L", "Spalten linksbündig ausrichten", () => applyDelimiterChange(v, (s) => s.map((c) => ({ ...c, align: "L" as const })))),
         mkBtn("⇔ C", "Spalten zentrieren", () => applyDelimiterChange(v, (s) => s.map((c) => ({ ...c, align: "C" as const })))),
         mkBtn("⇥ R", "Spalten rechtsbündig ausrichten", () => applyDelimiterChange(v, (s) => s.map((c) => ({ ...c, align: "R" as const })))),
@@ -449,9 +464,12 @@ const fenceArrowExit = EditorView.domEventHandlers({
       const lastLineNo = state.doc.lineAt(node.to).number;
       const closed = node.getChildren("CodeMark").length >= 2;
       if (headLine.number < (closed ? lastLineNo - 1 : lastLineNo)) return false;
-      const next = node.to < state.doc.length ? state.doc.lineAt(node.to + 1) : null;
-      if (next && next.text === "") view.dispatch({ selection: { anchor: next.from } });
-      else view.dispatch({ changes: { from: node.to, insert: "\n" }, selection: { anchor: node.to + 1 } });
+      // A wrapped line whose cursor is not on the last visual row: let CM move within the line. (coordsAtPos is null without layout, e.g. jsdom.)
+      const here = view.coordsAtPos(head), tail = view.coordsAtPos(headLine.to, -1);
+      if (here && tail && tail.top - here.top > 2) return false;
+      // Only move the cursor to the line after the block; text is added only when the block ends the document.
+      if (node.to < state.doc.length) view.dispatch({ selection: { anchor: state.doc.lineAt(node.to + 1).from }, scrollIntoView: true });
+      else view.dispatch({ changes: { from: node.to, insert: "\n" }, selection: { anchor: node.to + 1 }, scrollIntoView: true });
       event.preventDefault();
       return true;
     }
@@ -766,10 +784,19 @@ export async function insertAttachmentAt(view: EditorView, pos: number, file: { 
   view.dispatch({ changes: { from: pos, insert: before + link + (nextIsBreak ? "" : "\n") }, selection: { anchor: pos + before.length + link.length + 1 }, userEvent: "input.paste" });
 }
 
+/** True when the clipboard carries real text next to the files. A Finder copy puts only the file name/path in text/plain, a browser "copy image" only an `<img>` in text/html: both stay file pastes. */
+function hasPastedText(data: DataTransfer, files: File[]): boolean {
+  const names = new Set(files.map((f) => f.name));
+  const plain = data.getData("text/plain").trim();
+  if (plain && !plain.split(/\r?\n/).every((l) => names.has(l.trim().split("/").pop()!))) return true;
+  const html = data.getData("text/html");
+  return !!html && new DOMParser().parseFromString(html, "text/html").body.textContent!.trim() !== "";
+}
+
 const attachmentPasteHandler = EditorView.domEventHandlers({
   paste(event, view) {
     const files = event.clipboardData?.files ? [...event.clipboardData.files] : [];
-    if (files.length === 0) return false;
+    if (files.length === 0 || hasPastedText(event.clipboardData!, files)) return false; // Excel/Word: text + preview image -> paste the text
     event.preventDefault();
     for (const f of files) {
       void f.arrayBuffer().then(async (buf) => {

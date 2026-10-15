@@ -3,7 +3,7 @@ import { AtomicCodeMirrorEditor } from "@atomic-editor/editor";
 import { syntaxTree } from "@codemirror/language";
 import { EditorView, runScopeHandlers } from "@codemirror/view";
 import { cleanup, render } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { editorExtensions } from "./lib/editor";
 
 afterEach(cleanup);
@@ -442,5 +442,91 @@ describe("Pending-link file chip", () => {
     expect(chips("```\n" + link + "\n```")).toBe(0);
     expect(chips("text\n\n    " + link)).toBe(0);
     expect(chips("a `" + link + "` b")).toBe(0);
+  });
+});
+
+// Cycle-3 review fixes: ArrowDown out of a fence only moves the cursor; paste intercepts only pure file clipboards; table buttons act on the cursor's row/column.
+describe("Fence ArrowDown exit moves the cursor only", () => {
+  const arrowDown = (view: EditorView) => view.contentDOM.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+  it.each([
+    ["closing fence", "```\nx\n```\nende", 8],
+    ["body line", "```\nx\n```\nende", 4],
+    ["closing fence of a 4-backtick block", "````\nx\n````\nende", 10],
+  ])("%s -> cursor lands on the line after the block, text unchanged", (_name, src, at) => {
+    const view = mount(src);
+    view.dispatch({ selection: { anchor: at } });
+    arrowDown(view);
+    expect(doc(view)).toBe(src);
+    expect(view.state.selection.main.head).toBe(src.indexOf("ende"));
+  });
+  it("a fence that ends the document still gets one line to step into", () => {
+    const view = mount("```\nx\n```");
+    view.dispatch({ selection: { anchor: 5 } });
+    arrowDown(view);
+    expect(doc(view)).toBe("```\nx\n```\n");
+    expect(view.state.selection.main.head).toBe(10);
+  });
+});
+
+describe("Paste intercepts pure file clipboards only", () => {
+  /** Pastes `data` + a PNG; true when our handler took the file (CM's own text paste also calls preventDefault, so that is no signal). */
+  const takesFile = (view: EditorView, data: Record<string, string>) => {
+    const png = new File([new Uint8Array([1])], "shot.png", { type: "image/png" });
+    const read = vi.fn(() => new Promise<ArrayBuffer>(() => {})); // jsdom's File has no arrayBuffer; never resolving keeps the stash out of this test
+    Object.assign(png, { arrayBuffer: read });
+    const ev = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(ev, "clipboardData", { value: { files: [png], getData: (t: string) => data[t] ?? "" } });
+    view.contentDOM.dispatchEvent(ev);
+    return read.mock.calls.length > 0;
+  };
+  it("image only -> attachment paste", () => {
+    expect(takesFile(mount("x"), {})).toBe(true);
+  });
+  it("text/plain + image (Excel) -> the text is pasted, no attachment", () => {
+    const view = mount("");
+    expect(takesFile(view, { "text/plain": "A1\tB1" })).toBe(false);
+    expect(doc(view)).toBe("A1\tB1");
+  });
+  it("text/html with text + image -> no attachment", () => {
+    expect(takesFile(mount(""), { "text/html": "<b>Hallo</b>" })).toBe(false);
+  });
+  it("Finder copy (text/plain is the file name or path) and browser image copy (html is only <img>) stay attachments", () => {
+    expect(takesFile(mount(""), { "text/plain": "shot.png" })).toBe(true);
+    expect(takesFile(mount(""), { "text/plain": "/Users/x/Desktop/shot.png" })).toBe(true);
+    expect(takesFile(mount(""), { "text/html": '<img src="https://x/y.png">' })).toBe(true);
+  });
+});
+
+describe("Table toolbar acts on the cursor's row and column", () => {
+  const SRC = "| a | b | c |\n| :-- | :-: | --: |\n| 1 | 2 | 3 |\n| 4 | 5 | 6 |\n| 7 | 8 | 9 |";
+  /** Cursor inside the cell at (source line, column) and a click on the button with that title. */
+  const click = (title: string, line: number, col: number) => {
+    const view = mount(SRC);
+    const l = view.state.doc.line(line + 1);
+    const pipes = [...l.text.matchAll(/\|/g)].map((m) => m.index!);
+    view.dispatch({ selection: { anchor: l.from + pipes[col]! + 2 } });
+    view.dom.parentElement!.querySelector<HTMLElement>(`.cm-pn-table-toolbar button[title="${title}"]`)!.dispatchEvent(new MouseEvent("mousedown", { bubbles: true, cancelable: true }));
+    return doc(view);
+  };
+  it("⊕ Zeile inserts below the cursor row, not at the table end", () => {
+    expect(click("Zeile unter der aktuellen einfügen", 3, 1)).toBe(
+      "| a | b | c |\n| :-- | :-: | --: |\n| 1 | 2 | 3 |\n| 4 | 5 | 6 |\n|   |   |   |\n| 7 | 8 | 9 |");
+  });
+  it("⊕ Zeile on the header inserts below the delimiter", () => {
+    expect(click("Zeile unter der aktuellen einfügen", 0, 1).split("\n")[2]).toBe("|   |   |   |");
+  });
+  it("⊖ Zeile removes the cursor row (middle row)", () => {
+    expect(click("Aktuelle Zeile entfernen", 3, 1)).toBe("| a | b | c |\n| :-- | :-: | --: |\n| 1 | 2 | 3 |\n| 7 | 8 | 9 |");
+  });
+  it("⊖ Zeile on header or delimiter does nothing", () => {
+    expect(click("Aktuelle Zeile entfernen", 0, 1)).toBe(SRC);
+    expect(click("Aktuelle Zeile entfernen", 1, 1)).toBe(SRC);
+  });
+  it("⊕ Spalte inserts after the cursor column in every row; other alignments stay", () => {
+    expect(click("Spalte rechts der aktuellen einfügen", 3, 1)).toBe(
+      "| a | b | Spalte | c |\n| :--- | :---: | --- | ---: |\n| 1 | 2 |   | 3 |\n| 4 | 5 |   | 6 |\n| 7 | 8 |   | 9 |");
+  });
+  it("⊖ Spalte removes the cursor column (middle) from every row", () => {
+    expect(click("Aktuelle Spalte entfernen", 3, 1)).toBe("| a | c |\n| :--- | ---: |\n| 1 | 3 |\n| 4 | 6 |\n| 7 | 9 |");
   });
 });
