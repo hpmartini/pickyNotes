@@ -4,7 +4,7 @@
 // Print format mirrors the gate in the task brief: a single JSON line on stdout, exits 1 on any failure.
 
 import { connect, createConnection } from "node:net";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 
@@ -47,7 +47,11 @@ const waitForSocket = (ms) =>
     tick();
   });
 
+// A second instance fights the first one for hotkey and microphone, so never launch while one is running.
+const running = () => spawnSync("pgrep", ["-x", "WhisperStorm"]).status === 0;
+
 const launch = () => {
+  if (running()) throw new Error("WhisperStorm is running but has no control socket (older build); quit it and start the new build");
   if (!existsSync(APP)) {
     console.error(`WhisperStorm.app not found at ${APP}; build it first (xcodegen generate && xcodebuild …).`);
     process.exit(1);
