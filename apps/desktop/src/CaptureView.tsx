@@ -3,6 +3,7 @@ import "@atomic-editor/editor/styles.css";
 import type { CaptureInput } from "@pickynotes/shared";
 import { useEffect, useRef, useState } from "react";
 import { blobToBase64 } from "./lib/base64";
+import { editorExtensions } from "./lib/editor";
 import type { CaptureQueue, QueuedCapture, Send } from "./lib/queue";
 
 const MAX_BYTES = 100 * 1024 * 1024; // sanity cap against freezing the webview; the server decides (413 above MAX_ATTACHMENT_MB without an object store)
@@ -129,7 +130,7 @@ export function CaptureView({ queue, send, screenshot }: Props) {
   return (
     <section aria-label="Erfassen">
       <div className="editor">
-        <AtomicCodeMirrorEditor documentId={`capture-${docId}`} markdownSource={text} onMarkdownChange={setText} />
+        <AtomicCodeMirrorEditor documentId={`capture-${docId}`} markdownSource={text} onMarkdownChange={setText} extensions={editorExtensions} />
       </div>
       <div className="actions">
         <button className="primary" onClick={sendText} disabled={!text.trim()}>Speichern</button>

@@ -128,3 +128,26 @@ Ehrliche Einordnung: Die UI war nur funktional getestet (Tests, e2e), ich hatte 
 
 ## Nachtrag: Typecheck-Gate
 Nach den Redelivery-Tests (`app.test.ts`) war `npm run typecheck` rot (TS2322): `expectUntouched` erwartete `() => Promise<Response>`, `post` liefert aber `Response | Promise<Response>` (Hono `app.request`). Fix: Parametertyp auf `() => Response | Promise<Response>` geweitet. Danach grün: typecheck (alle Workspaces), `npm test` (server 73 + 10 PG übersprungen, desktop 17, cli 5, shared 2), PG auf `picky_test` 83/83.
+
+## Editor: keine Setext-Überschriften mehr (Obsidian/Notion-Verhalten)
+**Auftrag:** Text + Enter + „-„ darf die Zeile darüber nicht in eine Überschrift verwandeln. Verhalten wie Obsidian/Notion: nur `# `-Präfix ist eine Überschrift, `---` unter Text ist eine Trennlinie, `-` unter Text bleibt Text, `=` unter Text ebenfalls Text.
+
+**Ursache:** Atomic Editor (0.6.2) baut seinen Parser intern mit `markdown({base: markdownLanguage, extensions: [highlightMarkdown]})` (`AtomicCodeMirrorEditor.js:112`). Dieser Parser enthält `SetextHeading`, und `inline-preview.js:177` mappt `SetextHeading1/2` auf `cm-atomic-h1/h2`. Die Inline-Preview versteckt das `---`/`===` darunter, und schon wird die darüberliegende Zeile als riesige Überschrift gerendert.
+
+**Fix:** Neue Datei `apps/desktop/src/lib/editor.ts` baut denselben Parser nochmal — mit `{remove: ["SetextHeading"]}` in den `extensions` — und reicht ihn via `Prec.high(markdown({...}).language)` durch die `extensions`-Prop des Editors. `Prec.high` schlägt die intern verdrahtete `markdown()`-Erweiterung (gleiche Facette, höhere Präzedenz). Kein `node_modules`-Patch, `markdownLanguage` und `data`-Facet bleiben geteilt, also funktionieren `isActiveAt` (Enter-Listenfortsetzung, Backspace) und `closeBrackets`-Daten weiter. Kommentar im Code: `shortcut: … drop once Atomic Editor accepts lezer extensions`.
+
+**Verkabelung:** `CaptureView.tsx:132` reicht `extensions={editorExtensions}` durch. `CaptureView.test.tsx` erweitert den Editor-Mock um `highlightMarkdown: {}`, damit der Import in `lib/editor.ts` unter jsdom nicht scheitert. `editor.test.tsx` mountet mit den Overrides (vorher waren die List-Tests ohne Override, jetzt verifizieren sie gleichzeitig, dass die Override die List-Logik nicht kaputtmacht — Tab/Shift-Tab/Enter-Continue/Exit grün).
+
+**Neue Tests (`editor.test.tsx`):** `syntaxTree`-basierte Asserts, kein DOM-Roundtrip — `Titel\n-`, `Titel\n- `, `Titel\n=`, `Titel\n===` dürfen kein `SetextHeading1/2`/`ATXHeading*` enthalten; `Titel\n---` muss `HorizontalRule` enthalten; `# A`/`## A`/`### A` liefern weiter `ATXHeading1-3`; `Titel\n- x` liefert `BulletList`. Realer CodeMirror, kein Mock.
+
+**Neuer e2e-Test (`editor.spec.ts`):** Exploratives Tippen des gesamten Dokuments **zeichenweise** (`# … ###`, Absatz, der Regressionsfall „Text ↵ - ↵ ---", Bullet-Liste mit Enter/Tab/Shift-Tab/Backspace-Austritt, geordnete Liste, Aufgabenliste, **fett**/*kursiv*/`code`/Zitat/Code-Block/Link). Nach jeder Tastatureingabe per `page.evaluate` der DOM-Probe: keine Plain-Text-Zeile hat Heading-Größe (Setext-Regression), Fokus bleibt in `.cm-content`. Am Ende harte Asserts: jede Zeile mit `cm-atomic-h*` ist eine der drei ATX-Zeilen; `Eine Zeile Text` hat keine Heading-Klasse; die `---`-Zeile hat `cm-atomic-hr`; ein Screenshot vom Editor wird kurz unter `e2e/__shots__/exploratory.png` abgelegt, angeschaut und sofort wieder gelöscht (nicht im Commit).
+
+**Gefundene weitere Abweichungen von Obsidian/Notion — dokumentiert, nicht gefixt (Scope-Disziplin):**
+- Geordnete Liste: `1. eins` ↵ `zwei` → Atomic macht daraus `- zwei` (Bullet). Obsidian/Notion würde `2. zwei` weiterführen. Ursache: `inline-preview.js:891 insertTightListItem` setzt bei nicht-Bullet-Listen einen Bullet-Marker.
+- `**fett**` Zeichen für Zeichen → `****` durch `extendEmphasisPair` (Auto-Close der `**`). Obsidian/Notion schließt `**` nicht auto.
+- `> zitat` ↵ ↵ — die zweite ↵ verlässt das Zitat nicht; ` ``` ` tippen erzeugt `> ``` `. Obsidian verlässt das Zitat bei ↵ auf einer leeren Zitat-Zeile zuverlässig.
+- `- aufgabe` nach Listenende wird als Fortsetzung der vorherigen Liste interpretiert (Bullet statt neue Liste).
+
+Diese Punkte würden echte Code-Änderungen im Editor-Aufruf oder am `extendEmphasisPair`/`insertTightListItem` brauchen; das wäre ein eigenes Briefing. Der Screenshot zeigt sie nebeneinander — die Setext-Regression ist behoben, der Rest ist sichtbar, aber außerhalb des Auftrags.
+
+**Stand:** typecheck ok, desktop 24 Unit-Tests (vorher 17, +7), e2e 5/5 (vorher 4/4, +1). `__shots__/exploratory.png` nur temporär, gelöscht.

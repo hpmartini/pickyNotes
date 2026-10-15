@@ -15,7 +15,10 @@ vi.mock("@atomic-editor/editor", async () => {
     useEffect(() => void editorMounts.count++, []);
     return <textarea aria-label="Editor" defaultValue={markdownSource} onChange={(e) => onMarkdownChange(e.target.value)} />;
   };
-  return { AtomicCodeMirrorEditor: (p: P) => <Inner key={p.documentId ?? p.markdownSource} {...p} /> };
+  return {
+    AtomicCodeMirrorEditor: (p: P) => <Inner key={p.documentId ?? p.markdownSource} {...p} />,
+    highlightMarkdown: {}, // imported by lib/editor.ts to build editorExtensions
+  };
 });
 vi.mock("@atomic-editor/editor/styles.css", () => ({}));
 
