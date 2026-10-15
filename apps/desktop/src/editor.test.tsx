@@ -490,10 +490,19 @@ describe("Paste intercepts pure file clipboards only", () => {
   it("text/html with text + image -> no attachment", () => {
     expect(takesFile(mount(""), { "text/html": "<b>Hallo</b>" })).toBe(false);
   });
-  it("Finder copy (text/plain is the file name or path) and browser image copy (html is only <img>) stay attachments", () => {
-    expect(takesFile(mount(""), { "text/plain": "shot.png" })).toBe(true);
-    expect(takesFile(mount(""), { "text/plain": "/Users/x/Desktop/shot.png" })).toBe(true);
+  it("browser image copy (html is only <img>) stays an attachment", () => {
     expect(takesFile(mount(""), { "text/html": '<img src="https://x/y.png">' })).toBe(true);
+  });
+  it("text/plain equal to the file name (Finder copy) is pasted as text, no attachment link", () => {
+    const view = mount("");
+    expect(takesFile(view, { "text/plain": "shot.png" })).toBe(false);
+    expect(doc(view)).toBe("shot.png");
+    expect(doc(view)).not.toContain("pending:");
+  });
+  it("whitespace-only text/plain next to an image is not trimmed away: text paste, no attachment", () => {
+    const view = mount("");
+    expect(takesFile(view, { "text/plain": "\t\n" })).toBe(false);
+    expect(doc(view)).not.toContain("pending:");
   });
 });
 

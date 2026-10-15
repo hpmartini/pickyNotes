@@ -796,11 +796,10 @@ export async function insertAttachmentAt(view: EditorView, pos: number, file: { 
   view.dispatch({ changes: { from: pos, insert: before + link + (nextIsBreak ? "" : "\n") }, selection: { anchor: pos + before.length + link.length + 1 }, userEvent: "input.paste" });
 }
 
-/** True when the clipboard carries real text next to the files. A Finder copy puts only the file name/path in text/plain, a browser "copy image" only an `<img>` in text/html: both stay file pastes. */
-function hasPastedText(data: DataTransfer, files: File[]): boolean {
-  const names = new Set(files.map((f) => f.name));
-  const plain = data.getData("text/plain").trim();
-  if (plain && !plain.split(/\r?\n/).every((l) => names.has(l.trim().split("/").pop()!))) return true;
+/** True when the clipboard carries any text next to the files. A browser "copy image" carries only an `<img>` in text/html: that stays a file paste.
+ *  Deliberate trade-off: a Finder copy puts the file name in text/plain and therefore pastes as text (name matching cannot tell it from real text); files come in via drag & drop and the Datei button. */
+function hasPastedText(data: DataTransfer): boolean {
+  if (data.getData("text/plain") !== "") return true;
   const html = data.getData("text/html");
   return !!html && new DOMParser().parseFromString(html, "text/html").body.textContent!.trim() !== "";
 }
@@ -808,7 +807,7 @@ function hasPastedText(data: DataTransfer, files: File[]): boolean {
 const attachmentPasteHandler = EditorView.domEventHandlers({
   paste(event, view) {
     const files = event.clipboardData?.files ? [...event.clipboardData.files] : [];
-    if (files.length === 0 || hasPastedText(event.clipboardData!, files)) return false; // Excel/Word: text + preview image -> paste the text
+    if (files.length === 0 || hasPastedText(event.clipboardData!)) return false; // Excel/Word: text + preview image -> paste the text
     event.preventDefault();
     for (const f of files) {
       void f.arrayBuffer().then(async (buf) => {
