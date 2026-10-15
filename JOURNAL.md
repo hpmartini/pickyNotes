@@ -193,3 +193,22 @@ Der alte Keymap-Eintrag `clearEmptyMarker(/^\s*(>\s*)+$/, "Blockquote")` für En
 **Negativprobe.** `enterLeavesEmptyMarker`-Body auf `return false` zurückgebaut, nur die Editor-Unit-Tests laufen lassen: genau die 6 neuen Enter-Asserts brechen (alle vier `it.each`-Cases + nested + „inserts a blank line before the next paragraph"). Backspace-Asserts bleiben grün, Fence-Test grün. Handler wieder eingebaut, alle Tests grün. Die Tests fangen also genau das, was sie fangen sollen.
 
 **Stand:** typecheck ok, server 81 + 10 PG übersprungen, cli 5, shared 2, desktop **42** (vorher 37, +5 für die Enter-Asserts), e2e **10** (vorher 5, +5 für die fünf Marker-Exit-Tests).
+
+## Lauf-Journal: Editor-Run `editor-setext` (2026-10-15) — Abschluss
+
+**Auftrag:** Text ↵ `-` machte die Zeile darüber zur Überschrift; exploratives, zeichenweises Testen mit visueller Prüfung; Verhalten wie Obsidian/Notion.
+
+**Ergebnis:** 3 mw-Zyklen (Plan opus, Build minimax, Review sol) plus Reviewer-Agent, Verdict accept, `mw orchestrate finish` → `goal: met`. Commits auf `main` (lokal, nicht gepusht): 345f642, 3326692, 4fb0e2f, a4dc73d, 7d5413a, 0a0d9ef.
+
+**Zuletzt gefunden und behoben (0a0d9ef):** Backspace auf leerem `- ` direkt unter Text ließ `text\n-` stehen (Lezer sieht dort kein `ListItem`). Handler prüft jetzt nur noch „nicht in Code“. Tests +2 Unit.
+
+**Prüfstand:** tsc 0, Unit 44/44, e2e 10/10 (Playwright, Chromium). Eigene Sichtprüfung: 29 Einzelschritt-Screenshots, kein Fehl-Titel, Listen/Zitat/Task/Code/Trenner ok.
+
+**Vertagt (Followups, dokumentiert):**
+- Backspace auf leerem *verschachteltem* Marker flacht komplett statt eine Ebene; Enter auf verschachteltem leerem Zitat verlässt alle Ebenen (minor).
+- `*`/`_`-Inputhandler ohne Multi-Cursor-Guard (minor).
+- Duplizierter Parser verliert `codeLanguages` (minor; Entfernung, sobald Atomic Lezer-Extensions annimmt).
+- Testlücken: closeBrackets-Wrap, IME, verschachtelte Zitate.
+- Natives Tauri-Fenster visuell ungesehen (Bildschirm gesperrt); alle Browsertests liefen in Chromium, nicht WebKit.
+- VPS-Deployment: technisch umsetzbar, aber Briefing-Guardrail verlangt Nutzerentscheidung (Option 1 isolierter Compose-Stack unter `/srv/pickynotes/vault`, 127.0.0.1 — empfohlen; 2 eigener Pfad + Tailscale; 3 vertagen). VPS nur lesend untersucht, nichts verändert. Vertagt bis zur Entscheidung.
+- `git push` nur auf ausdrückliches Ja.
