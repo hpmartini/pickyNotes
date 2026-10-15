@@ -8,7 +8,9 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 
-const SOCKET = `${homedir()}/Library/Application Support/WhisperStorm/control.sock`;
+// WHISPERSTORM_SOCKET points the script at another socket (tests use a fake server there) and disables the auto-launch.
+const OVERRIDE = process.env.WHISPERSTORM_SOCKET;
+const SOCKET = OVERRIDE ?? `${homedir()}/Library/Application Support/WhisperStorm/control.sock`;
 const APP = `${homedir()}/PROJECTS/WhisperStorm/build/Build/Products/Release/WhisperStorm.app`;
 
 const send = () =>
@@ -56,6 +58,7 @@ const launch = () => {
 (async () => {
   try {
     if (!existsSync(SOCKET)) {
+      if (OVERRIDE) throw new Error(`no WhisperStorm socket at ${SOCKET}`);
       launch();
       await waitForSocket(15000);
     }
