@@ -87,7 +87,9 @@ export async function capture(deps: Deps, input: CaptureInput): Promise<{ id: st
   const createdAt = dup?.createdAt ?? new Date().toISOString();
   if (input.kind === "text") {
     if (!input.text?.trim()) throw new BadCaptureError("text required");
-    await finishNote(deps, { id, body: input.text, source: input.source, kind: "text", createdAt, clientId: input.clientId });
+    // Store each inline attachment under raw/attachments/<id>-<safe>; rewrite `pending:<id>` in the body to the vault-relative path.
+    const body = await storeAttachmentsAndRewrite(deps, id, input.text, input.attachments);
+    await finishNote(deps, { id, body, source: input.source, kind: "text", createdAt, clientId: input.clientId });
     return { id };
   }
   if (!input.data) throw new BadCaptureError("data required");
@@ -106,6 +108,23 @@ export async function capture(deps: Deps, input: CaptureInput): Promise<{ id: st
   if (!dup) await deps.repo.upsertNote({ id, path: `raw/${id}.md`, title: filename, body: "", tags: [], summary: null, source, status: "pending", contentHash: null, createdAt, clientId: input.clientId });
   await deps.queue.send(input.kind === "voice" ? "transcribe" : "extract", job);
   return { id };
+}
+
+/**
+ * Stores each inline attachment and rewrites `pending:<attachmentId>` references in the body
+ * to `attachments/<noteId>-<safe-name>` (vault-relative). Unknown IDs are left as-is so a
+ * truncated payload doesn't silently drop the user's references.
+ */
+async function storeAttachmentsAndRewrite(deps: Deps, noteId: string, body: string, attachments?: { id: string; name: string; mime: string; data: string }[]): Promise<string> {
+  if (!attachments || attachments.length === 0) return body;
+  const paths = new Map<string, string>();
+  for (const a of attachments) {
+    const bytes = Buffer.from(a.data, "base64");
+    if (bytes.length > deps.maxAttachmentBytes) throw new PayloadTooLargeError(`attachment exceeds ${deps.maxAttachmentBytes} bytes`);
+    const rel = await deps.vault.writeAttachment(noteId, a.name, bytes);
+    paths.set(a.id, rel);
+  }
+  return body.replace(/pending:([a-zA-Z0-9_-]+)/g, (match, id: string) => paths.get(id) ?? match);
 }
 
 /** Forwarded mail → imported note. Sender in frontmatter and body (so /context?sender= finds it); messageId makes redelivery idempotent. */

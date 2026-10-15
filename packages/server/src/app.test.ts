@@ -132,6 +132,35 @@ describe("capture pipeline", () => {
     expect((await post("/captures", { kind: "file", source: "imported", data: big, filename: "a.pdf" })).status).toBe(413);
   });
 
+  it("text with attachments: stores each attachment and rewrites pending:<id> in the body", async () => {
+    const data = Buffer.from("hi").toString("base64");
+    const text = "siehe ![bild](pending:a) und [dok](pending:b)";
+    const { id } = (await (await post("/captures", {
+      kind: "text", source: "typed", text,
+      attachments: [
+        { id: "a", name: "bild.png", mime: "image/png", data },
+        { id: "b", name: "dok.pdf", mime: "application/pdf", data },
+      ],
+    })).json()) as { id: string };
+    expect(id).toBeTypeOf("string");
+    const file = await readFile(path.join(root, `raw/${id}.md`), "utf8");
+    expect(file).toContain(`![bild](raw/attachments/${id}-bild.png)`);
+    expect(file).toContain(`[dok](raw/attachments/${id}-dok.pdf)`);
+    expect(file).not.toContain("pending:");
+    expect(await readFile(path.join(root, `raw/attachments/${id}-bild.png`), "utf8")).toBe("hi");
+    expect(await readFile(path.join(root, `raw/attachments/${id}-dok.pdf`), "utf8")).toBe("hi");
+  });
+
+  it("text with attachments: unknown pending:<id> in the body is left as-is (no silent drop)", async () => {
+    const data = Buffer.from("x").toString("base64");
+    const { id } = (await (await post("/captures", {
+      kind: "text", source: "typed", text: "missing: ![x](pending:ghost)",
+      attachments: [{ id: "real", name: "f.bin", mime: "application/octet-stream", data }],
+    })).json()) as { id: string };
+    const file = await readFile(path.join(root, `raw/${id}.md`), "utf8");
+    expect(file).toContain("![x](pending:ghost)");
+  });
+
   it("voice: dictated @claude runs exactly once, with a status callout", async () => {
     const r = await post("/captures", { kind: "voice", source: "dictated", data: Buffer.from("audio").toString("base64"), filename: "v.webm", mime: "audio/webm" });
     const { id } = (await r.json()) as { id: string };

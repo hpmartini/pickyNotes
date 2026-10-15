@@ -4,6 +4,16 @@ export const CaptureKind = z.enum(["text", "voice", "screenshot", "file"]);
 /** typed/dictated = own input (may contain @claude); imported = OCR/PDF/file/web (never executed). */
 export const CaptureSource = z.enum(["typed", "dictated", "imported"]);
 
+/** A file attached to a text capture (image or document dropped/picked at the cursor). The server rewrites `pending:<id>` links in the body to vault-relative attachment paths. */
+export const CaptureAttachment = z.object({
+  id: z.string().min(1).max(100),
+  name: z.string().min(1).max(255),
+  mime: z.string().min(1).max(100),
+  /** Base64 payload. */
+  data: z.string().min(1),
+});
+export type CaptureAttachment = z.infer<typeof CaptureAttachment>;
+
 export const CaptureInput = z.object({
   kind: CaptureKind,
   source: CaptureSource,
@@ -13,6 +23,8 @@ export const CaptureInput = z.object({
   filename: z.string().max(255).optional(),
   mime: z.string().max(100).optional(),
   clientId: z.string().max(100).optional(),
+  /** Inline attachments for a text capture (image/file paste, drop, screenshot/file buttons). The body refers to them as `pending:<id>` until the server rewrites the links on save. */
+  attachments: z.array(CaptureAttachment).max(20).optional(),
 });
 export type CaptureInput = z.infer<typeof CaptureInput>;
 
