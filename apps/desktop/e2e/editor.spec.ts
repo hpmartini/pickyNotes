@@ -185,8 +185,8 @@ test("character-by-character typing: no unexpected heading, no line-height jump,
   const hrCount = finalProbe.classes.filter((c) => c.includes("cm-atomic-hr")).length;
   expect(hrCount, "at least one horizontal rule from the typed `---`").toBeGreaterThanOrEqual(1);
 
-  // visual sanity: take one screenshot of the rendered doc so a human can look at it
-  const shot = await page.locator(".editor").screenshot({ path: "e2e/__shots__/exploratory.png" });
+  // visual sanity: one screenshot for a human look — Playwright writes it under apps/desktop/test-results/ (gitignored)
+  const shot = await page.locator(".editor").screenshot({ path: test.info().outputPath("exploratory.png") });
   expect(shot.length).toBeGreaterThan(0);
 });
 

@@ -140,7 +140,7 @@ Nach den Redelivery-Tests (`app.test.ts`) war `npm run typecheck` rot (TS2322): 
 
 **Neue Tests (`editor.test.tsx`):** `syntaxTree`-basierte Asserts, kein DOM-Roundtrip — `Titel\n-`, `Titel\n- `, `Titel\n=`, `Titel\n===` dürfen kein `SetextHeading1/2`/`ATXHeading*` enthalten; `Titel\n---` muss `HorizontalRule` enthalten; `# A`/`## A`/`### A` liefern weiter `ATXHeading1-3`; `Titel\n- x` liefert `BulletList`. Realer CodeMirror, kein Mock.
 
-**Neuer e2e-Test (`editor.spec.ts`):** Exploratives Tippen des gesamten Dokuments **zeichenweise** (`# … ###`, Absatz, der Regressionsfall „Text ↵ - ↵ ---", Bullet-Liste mit Enter/Tab/Shift-Tab/Backspace-Austritt, geordnete Liste, Aufgabenliste, **fett**/*kursiv*/`code`/Zitat/Code-Block/Link). Nach jeder Tastatureingabe per `page.evaluate` der DOM-Probe: keine Plain-Text-Zeile hat Heading-Größe (Setext-Regression), Fokus bleibt in `.cm-content`. Am Ende harte Asserts: jede Zeile mit `cm-atomic-h*` ist eine der drei ATX-Zeilen; `Eine Zeile Text` hat keine Heading-Klasse; die `---`-Zeile hat `cm-atomic-hr`; ein Screenshot vom Editor wird kurz unter `e2e/__shots__/exploratory.png` abgelegt, angeschaut und sofort wieder gelöscht (nicht im Commit).
+**Neuer e2e-Test (`editor.spec.ts`):** Exploratives Tippen des gesamten Dokuments **zeichenweise** (`# … ###`, Absatz, der Regressionsfall „Text ↵ - ↵ ---", Bullet-Liste mit Enter/Tab/Shift-Tab/Backspace-Austritt, geordnete Liste, Aufgabenliste, **fett**/*kursiv*/`code`/Zitat/Code-Block/Link). Nach jeder Tastatureingabe per `page.evaluate` der DOM-Probe: keine Plain-Text-Zeile hat Heading-Größe (Setext-Regression), Fokus bleibt in `.cm-content`. Am Ende harte Asserts: jede Zeile mit `cm-atomic-h*` ist eine der drei ATX-Zeilen; `Eine Zeile Text` hat keine Heading-Klasse; die `---`-Zeile hat `cm-atomic-hr`; ein Screenshot vom Editor wird unter Playwrights `test-results/` abgelegt (gitignored).
 
 **Gefundene weitere Abweichungen von Obsidian/Notion — dokumentiert, nicht gefixt (Scope-Disziplin):**
 - Geordnete Liste: `1. eins` ↵ `zwei` → Atomic macht daraus `- zwei` (Bullet). Obsidian/Notion würde `2. zwei` weiterführen. Ursache: `inline-preview.js:891 insertTightListItem` setzt bei nicht-Bullet-Listen einen Bullet-Marker.
@@ -150,4 +150,4 @@ Nach den Redelivery-Tests (`app.test.ts`) war `npm run typecheck` rot (TS2322): 
 
 Diese Punkte würden echte Code-Änderungen im Editor-Aufruf oder am `extendEmphasisPair`/`insertTightListItem` brauchen; das wäre ein eigenes Briefing. Der Screenshot zeigt sie nebeneinander — die Setext-Regression ist behoben, der Rest ist sichtbar, aber außerhalb des Auftrags.
 
-**Stand:** typecheck ok, desktop 24 Unit-Tests (vorher 17, +7), e2e 5/5 (vorher 4/4, +1). `__shots__/exploratory.png` nur temporär, gelöscht.
+**Stand:** typecheck ok, desktop 24 Unit-Tests (vorher 17, +7), e2e 5/5 (vorher 4/4, +1).
