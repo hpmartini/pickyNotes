@@ -1,10 +1,12 @@
-import { AtomicCodeMirrorEditor } from "@atomic-editor/editor";
+import { AtomicCodeMirrorEditor, type AtomicCodeMirrorEditorHandle } from "@atomic-editor/editor";
 import "@atomic-editor/editor/styles.css";
 import type { CaptureInput } from "@pickynotes/shared";
-import { useEffect, useRef, useState } from "react";
-import { blobToBase64 } from "./lib/base64";
-import { editorExtensions } from "./lib/editor";
+import { EditorView } from "@codemirror/view";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { CaptureQueue, QueuedCapture, Send } from "./lib/queue";
+import { inTauri, whisperstorm } from "./lib/tauri";
+import { stashAttachment, makeMarkdownLink, readAttachmentsForSend } from "./lib/attachments";
+import { dispatchInsertTable, editorExtensions, insertTextAtCursor } from "./lib/editor";
 
 const MAX_BYTES = 100 * 1024 * 1024; // sanity cap against freezing the webview; the server decides (413 above MAX_ATTACHMENT_MB without an object store)
 
@@ -41,7 +43,7 @@ export function CaptureView({ queue, send, screenshot }: Props) {
   const [status, setStatus] = useState("");
   const [recording, setRecording] = useState(false);
   const [rejected, setRejected] = useState<QueuedCapture[]>([]);
-  const recorder = useRef<MediaRecorder | null>(null);
+  const editorRef = useRef<AtomicCodeMirrorEditorHandle | null>(null);
 
   /** Reports the queue state; false if the item with `key` was rejected by the server. */
   async function settle(key: number): Promise<boolean> {
@@ -79,11 +81,21 @@ export function CaptureView({ queue, send, screenshot }: Props) {
     setRejected((r) => r.filter((i) => i.key !== key));
   }
 
+  /** Resolve the live CM6 view from the editor's content DOM. */
+  function getView(): EditorView | null {
+    const dom = editorRef.current?.getContentDOM();
+    if (!dom) return null;
+    // CM6 puts the view on the parent .cm-editor element.
+    const editorEl = dom.closest(".cm-editor") as HTMLElement | null;
+    return editorEl ? EditorView.findFromDOM(editorEl) : null;
+  }
+
   async function sendText() {
     if (!text.trim()) return;
     const sent = text;
     // The user may keep typing while the send is pending; clear only if the editor still holds what was sent. A rejected draft stays.
-    if (await submit({ kind: "text", source: "typed", text: sent })) {
+    const attachments = await readAttachmentsForSend();
+    if (await submit({ kind: "text", source: "typed", text: sent, ...(attachments.length ? { attachments } : {}) })) {
       if (textRef.current === sent) {
         setText("");
         setDocId((n) => n + 1); // remount the editor empty; markdownSource is only read at mount
@@ -92,45 +104,68 @@ export function CaptureView({ queue, send, screenshot }: Props) {
   }
 
   async function toggleRecording() {
-    if (recorder.current) {
-      recorder.current.stop();
+    if (recording) {
+      try {
+        const r = await whisperstorm("stop");
+        if (r.ok && r.text) {
+          const view = getView();
+          if (view) insertTextAtCursor(view, r.text);
+        }
+        setStatus(r.ok ? "Transkript eingefügt." : (r.error ?? "WhisperStorm Fehler"));
+      } catch (e) {
+        setStatus(e instanceof Error ? e.message : String(e));
+      }
+      setRecording(false);
       return;
     }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const rec = new MediaRecorder(stream);
-      const chunks: Blob[] = [];
-      rec.ondataavailable = (e) => chunks.push(e.data);
-      rec.onstop = async () => {
-        stream.getTracks().forEach((t) => t.stop());
-        recorder.current = null;
-        setRecording(false);
-        const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
-        await submit({ kind: "voice", source: "dictated", data: await blobToBase64(blob), filename: "voice.webm", mime: blob.type });
-      };
-      recorder.current = rec;
-      rec.start();
-      setRecording(true);
-    } catch {
-      setStatus("Mikrofon nicht verfügbar");
+      const r = await whisperstorm("start");
+      if (r.ok) setRecording(true);
+      else setStatus(r.error ?? "WhisperStorm läuft nicht");
+    } catch (e) {
+      setStatus(e instanceof Error ? e.message : String(e));
     }
+  }
+
+  async function insertAttachment(file: { name: string; mime: string; bytes: Uint8Array }) {
+    const view = getView();
+    if (!view) return;
+    const { markdownTarget } = await stashAttachment(file);
+    const link = makeMarkdownLink(file.name, markdownTarget, file.mime);
+    insertTextAtCursor(view, link);
   }
 
   async function takeScreenshot() {
     const data = await screenshot?.();
-    if (data) await submit({ kind: "screenshot", source: "imported", data, filename: "screenshot.png", mime: "image/png" });
+    if (!data) return;
+    const bytes = Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
+    await insertAttachment({ name: "screenshot.png", mime: "image/png", bytes });
   }
 
   async function pickFile(file: File | undefined) {
     if (!file) return;
     if (file.size > MAX_BYTES) return setStatus("Datei größer als 100 MB");
-    await submit({ kind: "file", source: "imported", data: await blobToBase64(file), filename: file.name, mime: file.type || undefined });
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    await insertAttachment({ name: file.name, mime: file.type || "application/octet-stream", bytes });
   }
+
+  function insertTable() {
+    const view = getView();
+    if (view) dispatchInsertTable(view);
+  }
+
+  const extensions = useMemo(() => editorExtensions, []);
 
   return (
     <section aria-label="Erfassen">
       <div className="editor">
-        <AtomicCodeMirrorEditor documentId={`capture-${docId}`} markdownSource={text} onMarkdownChange={setText} extensions={editorExtensions} />
+        <AtomicCodeMirrorEditor
+          documentId={`capture-${docId}`}
+          markdownSource={text}
+          onMarkdownChange={setText}
+          extensions={extensions}
+          editorHandleRef={editorRef}
+        />
       </div>
       <div className="actions">
         <button className="primary" onClick={sendText} disabled={!text.trim()}>Speichern</button>
@@ -140,6 +175,7 @@ export function CaptureView({ queue, send, screenshot }: Props) {
           Datei
           <input type="file" hidden onChange={(e) => pickFile(e.target.files?.[0])} />
         </label>
+        <button onClick={insertTable}>Tabelle</button>
         <p className="status" role="status" aria-live="polite">{status}</p>
       </div>
       {rejected.length > 0 && (

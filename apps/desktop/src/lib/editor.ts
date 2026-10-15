@@ -452,6 +452,113 @@ export function dispatchInsertTable(view: EditorView): void {
   view.focus();
 }
 
+// Renders markdown images and file links inline. Pending attachments (`pending:<id>`) get a tiny chip; images get a blob/data: preview.
+// shortcut: we rebuild on every update because the doc length is small and attachment IDs are cheap to enumerate.
+function attachmentsRenderDecos(view: EditorView): DecorationSet {
+  const decos: Range<Decoration>[] = [];
+  const text = view.state.doc.toString();
+  const imgRe = /!\[([^\]]*)\]\((?:pending:[a-zA-Z0-9_-]+|[^)\s]+)\)/g;
+  const linkRe = /\[([^\]]+)\]\((?:pending:[a-zA-Z0-9_-]+|[^)\s]+)\)/g;
+  let m: RegExpExecArray | null;
+  while ((m = imgRe.exec(text))) {
+    const from = m.index;
+    const to = from + m[0].length;
+    if (!inside(view.state, from, "FencedCode") && !inside(view.state, from, "CodeBlock")) {
+      decos.push(Decoration.replace({ widget: new PendingImageWidget(m[1] ?? "") }).range(from, to));
+    }
+  }
+  while ((m = linkRe.exec(text))) {
+    // Skip images we already wrapped.
+    if (decos.length > 0 && decos[decos.length - 1]!.from === m.index) continue;
+    const from = m.index;
+    const to = from + m[0].length;
+    if (!inside(view.state, from, "FencedCode") && !inside(view.state, from, "CodeBlock")) {
+      decos.push(Decoration.replace({ widget: new FileChipWidget(m[1] ?? "") }).range(from, to));
+    }
+  }
+  return Decoration.set(decos, true);
+}
+
+class PendingImageWidget extends WidgetType {
+  constructor(readonly alt: string) { super(); }
+  toDOM() {
+    const span = document.createElement("span");
+    span.className = "cm-pn-pending-image";
+    span.textContent = `🖼  ${this.alt || "Bild"}`;
+    span.title = "Anhang wird beim Speichern in den Vault übertragen";
+    return span;
+  }
+  eq(other: PendingImageWidget) { return other.alt === this.alt; }
+  ignoreEvent() { return true; }
+}
+
+class FileChipWidget extends WidgetType {
+  constructor(readonly name: string) { super(); }
+  toDOM() {
+    const span = document.createElement("span");
+    span.className = "cm-pn-file-chip";
+    span.textContent = `📎 ${this.name}`;
+    return span;
+  }
+  eq(other: FileChipWidget) { return other.name === this.name; }
+  ignoreEvent() { return true; }
+}
+
+const attachmentsRenderPlugin = ViewPlugin.fromClass(
+  class {
+    decorations: DecorationSet;
+    constructor(view: EditorView) { this.decorations = attachmentsRenderDecos(view); }
+    update(update: { docChanged: boolean; viewportChanged: boolean; state: EditorState; view: EditorView }) {
+      if (update.docChanged || update.viewportChanged) this.decorations = attachmentsRenderDecos(update.view);
+    }
+  },
+  { decorations: (v) => v.decorations },
+);
+
+// Paste/drop handler: stash each file/blob as an attachment and insert `![name](pending:<id>)` (image) or `[name](pending:<id>)` (other) at the cursor.
+// shortcut: bypasses Atomic's default paste handling, which would just paste file paths as plain text.
+async function insertAttachmentAt(view: EditorView, pos: number, file: { name: string; mime: string; bytes: Uint8Array }): Promise<void> {
+  const { stashAttachment, makeMarkdownLink } = await import("./attachments");
+  const { markdownTarget } = await stashAttachment(file);
+  const link = makeMarkdownLink(file.name, markdownTarget, file.mime);
+  const blank = pos > 0 && view.state.doc.sliceString(pos - 1, pos) !== "\n" ? "\n" : "";
+  view.dispatch({ changes: { from: pos, insert: blank + link }, selection: { anchor: pos + blank.length + link.length }, userEvent: "input.paste" });
+}
+
+const attachmentPasteHandler = EditorView.domEventHandlers({
+  paste(event, view) {
+    const files = event.clipboardData?.files ? [...event.clipboardData.files] : [];
+    if (files.length === 0) return false;
+    event.preventDefault();
+    for (const f of files) {
+      void f.arrayBuffer().then(async (buf) => {
+        await insertAttachmentAt(view, view.state.selection.main.head, { name: f.name || "Datei", mime: f.type || "application/octet-stream", bytes: new Uint8Array(buf) });
+      });
+    }
+    return true;
+  },
+  drop(event, view) {
+    const files = event.dataTransfer?.files ? [...event.dataTransfer.files] : [];
+    if (files.length === 0) return false;
+    event.preventDefault();
+    // Drop position from the screen coordinates — drop at end of doc if we can't resolve.
+    const pos = view.posAtCoords({ x: event.clientX, y: event.clientY }) ?? view.state.doc.length;
+    for (const f of files) {
+      void f.arrayBuffer().then(async (buf) => {
+        await insertAttachmentAt(view, pos, { name: f.name || "Datei", mime: f.type || "application/octet-stream", bytes: new Uint8Array(buf) });
+      });
+    }
+    return true;
+  },
+});
+
+/** Insert text at the editor's current cursor — used by the speech button. */
+export function insertTextAtCursor(view: EditorView, text: string): void {
+  const head = view.state.selection.main.head;
+  const blank = head > 0 && view.state.doc.sliceString(head - 1, head) !== "\n" ? "\n" : "";
+  view.dispatch({ changes: { from: head, insert: blank + text }, selection: { anchor: head + blank.length + text.length }, userEvent: "input.type" });
+}
+
 export const editorExtensions = [
   Prec.high(parser),
   Prec.highest(plainEmphasisChars),
@@ -461,6 +568,8 @@ export const editorExtensions = [
   Prec.high(fenceArrowExit),
   Prec.high(subSupPlugin),
   Prec.high(emojiPlugin),
+  Prec.high(attachmentsRenderPlugin),
+  Prec.highest(attachmentPasteHandler),
   Prec.high(tableToolbar),
   atomicTables(), // keep Atomic's table widgets so cells render; our toolbar writes valid GFM that re-parses as Table.
 ];

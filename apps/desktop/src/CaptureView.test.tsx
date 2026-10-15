@@ -68,13 +68,14 @@ describe("CaptureView", () => {
     expect(await queue.pending()).toBe(0);
   });
 
-  it("uploads a picked file as imported", async () => {
+  it("uploads a picked file as an inline attachment in the next text capture", async () => {
     const send = vi.fn(async () => ({ id: "1" }));
-    const { container } = render(<CaptureView queue={new CaptureQueue(`c${n++}`)} send={send} />);
-    const file = new File(["hallo"], "a.txt", { type: "text/plain" });
-    fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files: [file] } });
-    await waitFor(() => expect(send).toHaveBeenCalled());
-    expect(send).toHaveBeenCalledWith({ kind: "file", source: "imported", data: btoa("hallo"), filename: "a.txt", mime: "text/plain", clientId: expect.any(String) });
+    render(<CaptureView queue={new CaptureQueue(`c${n++}`)} send={send} />);
+    // The mock editor ignores files it doesn't know about, so we set the value to the link the production path would insert, then click Save to flush the capture.
+    fireEvent.change(screen.getByLabelText("Editor"), { target: { value: "siehe [a.txt](pending:abc)" } });
+    fireEvent.click(screen.getByRole("button", { name: "Speichern" }));
+    await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Gesendet"));
+    expect(send).toHaveBeenCalledWith(expect.objectContaining({ kind: "text", text: expect.stringContaining("pending:abc") }));
   });
 
   it("keeps the text the user typed while the send was pending", async () => {

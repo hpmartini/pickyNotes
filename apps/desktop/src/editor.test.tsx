@@ -292,7 +292,7 @@ describe("Subscript (~x~) and superscript (^x^)", () => {
 
 // Fence hiding: opening and closing ``` lines get the cm-pn-fence-hidden class when the cursor is outside the block.
 describe("Code-fence hiding", () => {
-  const fenceLineHas = (view: EditorView, predicate: (line: HTMLElement) => boolean) =>
+  const fenceLineHas = (view: EditorView, predicate: (line: Element) => boolean) =>
     [...view.dom.querySelectorAll(".cm-line")].some(predicate);
 
   it("hides the opening and closing fence lines when the cursor is after the block", () => {
