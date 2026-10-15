@@ -98,11 +98,14 @@ export const handlers: Record<JobName, (deps: Deps, p: Payload) => Promise<void>
     const note = await deps.repo.getNote(p.noteId);
     if (!note) return;
     const marker = `<!-- extract:${p.attachment} -->`;
-    if ((await deps.vault.read(note.path)).body.includes(marker)) return;
-    // "<!--" is neutralised so the extracted text cannot close its own section (parseInstructions skips those sections: an image saying "@claude ..." must not run).
-    const text = (await extractText(deps, p)).replaceAll("<!--", "&lt;!--");
-    // Re-checked inside the compare-before-write loop: a concurrent duplicate job must not append twice. The marker is not a picky block, so stripPickyBlocks keeps the text indexed.
-    const file = await patchNote(deps, note.path, (f) => (f.body.includes(marker) ? {} : { appendBody: `${marker}\n${text}\n<!-- /extract -->` }));
+    let file = await deps.vault.read(note.path);
+    // A retry after a crash between the file write and syncRow/embed finds the marker: skip the LLM and the append, but still sync the row and embed.
+    if (!file.body.includes(marker)) {
+      // "<!--" is neutralised so the extracted text cannot close its own section (parseInstructions skips those sections: an image saying "@claude ..." must not run).
+      const text = (await extractText(deps, p)).replaceAll("<!--", "&lt;!--");
+      // Re-checked inside the compare-before-write loop: a concurrent duplicate job must not append twice. The marker is not a picky block, so stripPickyBlocks keeps the text indexed.
+      file = await patchNote(deps, note.path, (f) => (f.body.includes(marker) ? {} : { appendBody: `${marker}\n${text}\n<!-- /extract -->` }));
+    }
     await syncRow(deps, file);
     await deps.queue.send("embed", { noteId: p.noteId });
   },

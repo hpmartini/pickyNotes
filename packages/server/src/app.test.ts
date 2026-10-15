@@ -256,6 +256,28 @@ describe("capture pipeline", () => {
     });
   });
 
+  it("extract-inline: a retry after a failure past the file write adds no second section but still syncs the row and queues embed", async () => {
+    const att = { id: "p", name: "bild.png", mime: "image/png", data: Buffer.from("bytes").toString("base64") };
+    const { id } = (await (await post("/captures", { kind: "text", source: "typed", text: "![bild](pending:p)", attachments: [att] })).json()) as { id: string };
+    const job = { noteId: id, attachment: `raw/attachments/${id}-${hid("p")}-bild.png`, filename: "bild.png", mime: "image/png" };
+    queue.pending.length = 0;
+    const upsert = repo.upsertNote.bind(repo);
+    const spy = vi.spyOn(repo, "upsertNote").mockImplementationOnce(async () => { throw new Error("db down"); });
+    await expect(handlers["extract-inline"](deps, job)).rejects.toThrow("db down"); // the file already holds the section, the row does not
+    expect((await readFile(path.join(root, `raw/${id}.md`), "utf8")).match(/Rechnung 42/g)).toHaveLength(1);
+    expect((await repo.getNote(id))!.body).not.toContain("Rechnung 42");
+    expect(queue.pending.filter((j) => j.name === "embed")).toHaveLength(0);
+    const calls = llm.calls.length;
+    spy.mockImplementation(upsert);
+    await handlers["extract-inline"](deps, job);
+    expect(llm.calls.length).toBe(calls); // marker found: no second extraction
+    const note = await readFile(path.join(root, `raw/${id}.md`), "utf8");
+    expect(note.match(/<!-- extract:/g)).toHaveLength(1);
+    expect(note.match(/Rechnung 42/g)).toHaveLength(1);
+    expect((await repo.getNote(id))!.body.match(/Rechnung 42/g)).toHaveLength(1);
+    expect(queue.pending.filter((j) => j.name === "embed")).toHaveLength(1);
+  });
+
   it("text with attachments: unknown pending:<id> in the body is left as-is (no silent drop)", async () => {
     const data = Buffer.from("x").toString("base64");
     const { id } = (await (await post("/captures", {
