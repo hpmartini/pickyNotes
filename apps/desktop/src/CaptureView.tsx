@@ -24,9 +24,11 @@ interface Props {
   onChange: (text: string) => void;
   /** The note was delivered and is unchanged: close its tab (or clear it if it is the last). */
   onSent: (id: string) => void;
+  /** A modal is open: the editor takes no focus or input. */
+  inert?: boolean;
 }
 
-export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled, notes, activeId, onChange, onSent }: Props) {
+export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled, notes, activeId, onChange, onSent, inert }: Props) {
   const text = notes.find((n) => n.id === activeId)?.text ?? "";
   const notesRef = useRef(notes);
   notesRef.current = notes;
@@ -172,7 +174,7 @@ export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled, 
   const extensions = useMemo(() => editorExtensions, []);
 
   return (
-    <section aria-label="Erfassen">
+    <section aria-label="Erfassen" inert={inert}>
       <div className="editor">
         <AtomicCodeMirrorEditor
           documentId={activeId} // the editor reads markdownSource only at mount; a stable id per note keeps focus while typing, a new note id remounts it

@@ -1,5 +1,5 @@
 import { createClient, type PickyClient } from "@pickynotes/shared";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { CaptureView } from "./CaptureView";
 import { addNote, closeNote, loadNotes, noteTitle, saveNotes, setNoteText } from "./lib/notes";
 import { CaptureQueue } from "./lib/queue";
@@ -24,6 +24,8 @@ export function App() {
   const send = async (i: Parameters<PickyClient["capture"]>[0]) => (await client()).capture(i);
 
   useEffect(() => void saveNotes(notes), [notes]);
+  const settingsOpenRef = useRef(false);
+  settingsOpenRef.current = settingsOpen;
 
   useEffect(() => {
     void applyHotkeys(null, loadHotkeys()).then(({ errors }) => Object.keys(errors).length && console.warn("Hotkeys nicht registriert:", errors));
@@ -33,6 +35,7 @@ export function App() {
     // Capture phase: CodeMirror's mac keymap binds Ctrl-n and would swallow it while the editor has focus.
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
+      if (settingsOpenRef.current) return e.key.toLowerCase() === "n" ? e.preventDefault() : undefined; // modal: no background actions
       if ((e.target as Element | null)?.closest?.("[data-shortcut-capture]")) return; // recording a hotkey, not using one
       if (e.key === ",") (e.preventDefault(), setSettingsOpen(true));
       else if (e.key.toLowerCase() === "n") (e.preventDefault(), setNotes(addNote));
@@ -55,7 +58,7 @@ export function App() {
 
   return (
     <main>
-      <header className="topbar" data-tauri-drag-region>
+      <header className="topbar" data-tauri-drag-region inert={settingsOpen}>
         <div role="tablist" aria-label="Notizen" data-tauri-drag-region>
           {notes.notes.map((n) => (
             <div key={n.id} role="presentation" className="tab" data-active={n.id === notes.active}>
@@ -79,9 +82,10 @@ export function App() {
         activeId={notes.active}
         onChange={(text) => setNotes((s) => setNoteText(s, s.active, text))}
         onSent={(id) => setNotes((s) => closeNote(s, id))}
+        inert={settingsOpen}
       />
       {searchOpen && (
-        <div className="panel">
+        <div className="panel" inert={settingsOpen}>
           <button className="close-panel" onClick={() => setSearchOpen(false)}>Suche schließen</button>
           <SearchView search={async (q) => (await (await client()).search(q)).hits} />
         </div>

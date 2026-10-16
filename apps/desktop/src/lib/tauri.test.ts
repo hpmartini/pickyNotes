@@ -70,6 +70,14 @@ describe("applyHotkeys", () => {
     expect(events).toEqual([]);
   });
 
+  it("overlapping changes run one after another and end with exactly the last request registered", async () => {
+    const k = { ...DEFAULT_HOTKEYS, dictation: "Control+Alt+K" };
+    const l = { ...DEFAULT_HOTKEYS, dictation: "Control+Alt+L" };
+    // both calls carry the stale `prev` a reopened dialog would pass
+    await Promise.all([applyHotkeys(DEFAULT_HOTKEYS, k), applyHotkeys(DEFAULT_HOTKEYS, l)]);
+    expect([...sc.handlers.keys()].sort()).toEqual([CMD_SHIFT, "Control+Alt+L"].sort());
+  });
+
   it("a live change unregisters the old key and registers the new one; unchanged keys stay", async () => {
     sc.unregistered.length = 0;
     const next = { ...DEFAULT_HOTKEYS, dictation: "Control+Alt+K" };

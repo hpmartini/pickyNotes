@@ -68,6 +68,20 @@ test.describe("settings modal", () => {
     expect((await registered(page)).at(-1)).toBe("Control+Alt+V");
   });
 
+  test("while the dialog is open the background is inert and Ctrl+N opens no note", async ({ page }) => {
+    await page.goto("/");
+    await openSettings(page);
+    await dialog(page).getByLabel("Server-URL").focus();
+    await page.keyboard.press("Control+n");
+    await expect(page.getByRole("tab")).toHaveCount(1);
+    await expect(page.locator("main > header.topbar")).toHaveAttribute("inert", "");
+    await expect(page.locator("section[aria-label='Erfassen']")).toHaveAttribute("inert", "");
+    await page.keyboard.press("Escape");
+    await expect(page.locator("section[aria-label='Erfassen']")).not.toHaveAttribute("inert");
+    await page.keyboard.press("Control+n");
+    await expect(page.getByRole("tab")).toHaveCount(2);
+  });
+
   test("capturing Control+N in a hotkey field does not open a note tab", async ({ page }) => {
     await mockTauri(page, NO_WS);
     await page.goto("/");

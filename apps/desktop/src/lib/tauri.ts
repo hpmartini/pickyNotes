@@ -62,8 +62,22 @@ const handlers = {
  * All changed old keys are unregistered first (so a swap of two keys works), then the new ones registered.
  * If a new key is rejected, the new keys already registered are dropped and the old ones restored.
  * Never throws: returns the keys that apply afterwards plus a message per rejected hotkey.
+ * Calls run one after another, and a call with `prev` starts from what the last call really left registered: the settings dialog may be closed and reopened while a change is in flight, so its `prev` can be stale.
  */
-export async function applyHotkeys(prev: Hotkeys | null, next: Hotkeys): Promise<{ applied: Hotkeys; errors: HotkeyErrors }> {
+export function applyHotkeys(prev: Hotkeys | null, next: Hotkeys): Promise<{ applied: Hotkeys; errors: HotkeyErrors }> {
+  const run = hotkeyQueue.then(async () => {
+    const r = await applyNow(prev && registeredHotkeys ? registeredHotkeys : prev, next);
+    registeredHotkeys = r.applied;
+    return r;
+  });
+  hotkeyQueue = run.then(() => {});
+  return run;
+}
+
+let hotkeyQueue: Promise<void> = Promise.resolve();
+let registeredHotkeys: Hotkeys | null = null;
+
+async function applyNow(prev: Hotkeys | null, next: Hotkeys): Promise<{ applied: Hotkeys; errors: HotkeyErrors }> {
   const names = (["toggle", "dictation"] as const).filter((n) => prev?.[n] !== next[n]);
   const errors: HotkeyErrors = {};
   const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
