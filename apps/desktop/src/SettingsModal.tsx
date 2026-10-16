@@ -9,8 +9,8 @@ const HOTKEY_LABELS: Record<keyof Hotkeys, string> = { dictation: "Diktat starte
 /** Modal dialog opened with Cmd/Ctrl+, : server connection, global hotkeys, Dock and menu-bar icon. */
 export function SettingsModal({ onClose }: { onClose: () => void }) {
   const dialog = useRef<HTMLDivElement>(null);
+  useEffect(() => dialog.current?.focus(), []); // once: onClose changes identity on every App render and must not steal focus again
   useEffect(() => {
-    dialog.current?.focus();
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
