@@ -10,7 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [{ "label": "main", "title": "pickyNotes", "width": 560, "height": 520, "minWidth": 380, "minHeight": 320 }],
+    "windows": [{ "label": "main", "title": "pickyNotes", "width": 560, "height": 520, "minWidth": 380, "minHeight": 320, "decorations": false, "alwaysOnTop": true, "visibleOnAllWorkspaces": true }],
     "security": { "csp": null }
   },
   "bundle": {

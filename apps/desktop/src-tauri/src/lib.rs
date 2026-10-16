@@ -3,7 +3,9 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Duration;
-use tauri::{Manager, WindowEvent};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 
 const KEYCHAIN_SERVICE: &str = "de.martinilabs.pickynotes";
 // shortcut: resolved at runtime via std::env::var("HOME") so the same build runs on any machine; the socket lives at ~/Library/Application Support/WhisperStorm/control.sock, which WhisperStorm creates on launch with 0600.
@@ -102,10 +104,152 @@ fn whisperstorm_at(path: &Path, cmd: &str) -> Result<WhisperReply, String> {
     })
 }
 
+/// Dock / menu-bar choices. Rust reads them at launch (the webview is not up yet), so they live in a small JSON file, not localStorage.
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Clone, Copy)]
+#[serde(default)]
+struct ShellPrefs {
+    dock: bool,
+    tray: bool,
+}
+
+impl Default for ShellPrefs {
+    fn default() -> Self {
+        Self { dock: true, tray: false }
+    }
+}
+
+/// A missing field takes its default; unreadable JSON falls back to all defaults.
+fn parse_prefs(raw: &str) -> ShellPrefs {
+    serde_json::from_str(raw).unwrap_or_default()
+}
+
+fn prefs_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(app.path().app_config_dir().map_err(|e| e.to_string())?.join("shell-prefs.json"))
+}
+
+fn load_prefs(app: &AppHandle) -> ShellPrefs {
+    prefs_path(app).ok().and_then(|p| std::fs::read_to_string(p).ok()).map(|s| parse_prefs(&s)).unwrap_or_default()
+}
+
+fn save_prefs(app: &AppHandle, prefs: ShellPrefs) -> Result<(), String> {
+    let path = prefs_path(app)?;
+    std::fs::create_dir_all(path.parent().ok_or("no config dir")?).map_err(|e| e.to_string())?;
+    std::fs::write(path, serde_json::to_string(&prefs).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+}
+
+/// Dock off = Accessory policy: no Dock icon and gone from Cmd+Tab. macOS only.
+fn apply_dock(app: &AppHandle, visible: bool) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    app.set_activation_policy(if visible { tauri::ActivationPolicy::Regular } else { tauri::ActivationPolicy::Accessory }).map_err(|e| e.to_string())?;
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, visible);
+    Ok(())
+}
+
+const TRAY_ID: &str = "main-tray";
+
+#[derive(Debug, PartialEq)]
+enum MenuAction {
+    Toggle,
+    Settings,
+    Quit,
+}
+
+fn menu_action(id: &str) -> Option<MenuAction> {
+    match id {
+        "toggle" => Some(MenuAction::Toggle),
+        "settings" => Some(MenuAction::Settings),
+        "quit" => Some(MenuAction::Quit),
+        _ => None,
+    }
+}
+
+fn show_main(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        let _ = w.show();
+        let _ = w.unminimize();
+        let _ = w.set_focus();
+    }
+}
+
+/// Hide when visible and focused, otherwise bring to the front (same rule as the show/hide hotkey).
+fn toggle_main(app: &AppHandle) {
+    match app.get_webview_window("main") {
+        Some(w) if w.is_visible().unwrap_or(false) && w.is_focused().unwrap_or(false) => {
+            let _ = w.hide();
+        }
+        _ => show_main(app),
+    }
+}
+
+fn apply_tray(app: &AppHandle, visible: bool) -> tauri::Result<()> {
+    if !visible {
+        app.remove_tray_by_id(TRAY_ID);
+        return Ok(());
+    }
+    if app.tray_by_id(TRAY_ID).is_some() {
+        return Ok(());
+    }
+    let menu = Menu::with_items(
+        app,
+        &[
+            &MenuItem::with_id(app, "toggle", "Anzeigen/Verbergen", true, None::<&str>)?,
+            &MenuItem::with_id(app, "settings", "Einstellungen", true, None::<&str>)?,
+            &PredefinedMenuItem::separator(app)?,
+            &MenuItem::with_id(app, "quit", "Beenden", true, None::<&str>)?,
+        ],
+    )?;
+    let mut tray = TrayIconBuilder::with_id(TRAY_ID)
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, e| match menu_action(e.id.as_ref()) {
+            Some(MenuAction::Toggle) => toggle_main(app),
+            Some(MenuAction::Settings) => {
+                show_main(app);
+                let _ = app.emit("picky:open-settings", ());
+            }
+            Some(MenuAction::Quit) => app.exit(0),
+            None => {}
+        })
+        .on_tray_icon_event(|tray, e| {
+            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = e {
+                toggle_main(tray.app_handle());
+            }
+        });
+    if let Some(icon) = app.default_window_icon() {
+        tray = tray.icon(icon.clone());
+    }
+    tray.build(app)?;
+    Ok(())
+}
+
+#[tauri::command]
+fn set_dock_visible(app: AppHandle, visible: bool) -> Result<(), String> {
+    apply_dock(&app, visible)?;
+    save_prefs(&app, ShellPrefs { dock: visible, ..load_prefs(&app) })
+}
+
+#[tauri::command]
+fn set_tray_visible(app: AppHandle, visible: bool) -> Result<(), String> {
+    apply_tray(&app, visible).map_err(|e| e.to_string())?;
+    save_prefs(&app, ShellPrefs { tray: visible, ..load_prefs(&app) })
+}
+
+/// Show the window on every Space, including over another app's fullscreen Space (main thread only: called from setup).
+#[cfg(target_os = "macos")]
+fn float_over_fullscreen(window: &tauri::WebviewWindow) {
+    use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
+    if let Ok(ptr) = window.ns_window() {
+        // SAFETY: ns_window() is the live NSWindow of this webview window; setup runs on the main thread.
+        let ns = unsafe { &*(ptr as *const NSWindow) };
+        ns.setCollectionBehavior(ns.collectionBehavior() | NSWindowCollectionBehavior::CanJoinAllSpaces | NSWindowCollectionBehavior::FullScreenAuxiliary);
+    }
+}
+
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![keychain_get, keychain_set, screenshot, whisperstorm])
+        .invoke_handler(tauri::generate_handler![keychain_get, keychain_set, screenshot, whisperstorm, set_dock_visible, set_tray_visible])
         .on_window_event(|window, event| {
             // Keep running in the background so the global hotkey can bring the window back.
             if let WindowEvent::CloseRequested { api, .. } = event {
@@ -114,7 +258,18 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            let _ = app.get_webview_window("main");
+            #[cfg(target_os = "macos")]
+            if let Some(w) = app.get_webview_window("main") {
+                float_over_fullscreen(&w);
+            }
+            let prefs = load_prefs(app.handle());
+            // A failed dock/tray apply must not stop the app from starting.
+            if let Err(e) = apply_dock(app.handle(), prefs.dock) {
+                eprintln!("dock: {e}");
+            }
+            if let Err(e) = apply_tray(app.handle(), prefs.tray) {
+                eprintln!("tray: {e}");
+            }
             Ok(())
         })
         .run(tauri::generate_context!())
@@ -144,6 +299,29 @@ mod tests {
             writeln!(s, "{reply}").unwrap();
             line
         })
+    }
+
+    #[test]
+    fn shell_prefs_default_when_missing_corrupt_or_partial() {
+        assert_eq!(ShellPrefs::default(), ShellPrefs { dock: true, tray: false });
+        assert_eq!(parse_prefs(""), ShellPrefs::default());
+        assert_eq!(parse_prefs("{not json"), ShellPrefs::default());
+        assert_eq!(parse_prefs(r#"{"tray":true}"#), ShellPrefs { dock: true, tray: true });
+        assert_eq!(parse_prefs(r#"{"dock":false}"#), ShellPrefs { dock: false, tray: false });
+    }
+
+    #[test]
+    fn shell_prefs_round_trip() {
+        let p = ShellPrefs { dock: false, tray: true };
+        assert_eq!(parse_prefs(&serde_json::to_string(&p).unwrap()), p);
+    }
+
+    #[test]
+    fn tray_menu_ids_map_to_actions() {
+        assert_eq!(menu_action("toggle"), Some(MenuAction::Toggle));
+        assert_eq!(menu_action("settings"), Some(MenuAction::Settings));
+        assert_eq!(menu_action("quit"), Some(MenuAction::Quit));
+        assert_eq!(menu_action("other"), None);
     }
 
     #[test]
