@@ -1,12 +1,13 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
+import { activeText } from "./helpers";
 
 // One test per feature of markdownguide.org (basic-syntax, extended-syntax, cheat-sheet, hacks), typed character by character
 // into the real editor. Each asserts the saved draft text AND the rendered DOM classes; a screenshot per typed line lands in test-results/.
 // Keys: ⏎ Enter, ⇥ Tab, ⇩ ArrowDown. Everything else is typed one character at a time.
 
 const KEYS: Record<string, string> = { "⏎": "Enter", "⇥": "Tab", "⇩": "ArrowDown", "⇲": "End" };
-const draft = (page: Page) => page.evaluate(() => localStorage.getItem("picky.draft") ?? "");
+const draft = (page: Page) => activeText(page);
 
 async function typeSteps(page: Page, name: string, keys: string) {
   let step = 0;

@@ -13,17 +13,28 @@
 body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 -apple-system, system-ui, sans-serif; }
 .editor { --atomic-editor-bg: var(--surface); --atomic-editor-fg: var(--fg); }
 
-/* one centred column so tabs, editor and actions share the same edges on wide windows */
-main { display: flex; flex-direction: column; height: 100vh; max-width: 780px; margin: 0 auto; padding: var(--space-3) var(--space-4) var(--space-4); gap: var(--space-3); }
-main > section, main > form { flex: 1; min-height: 0; }
+/* no max-width: the editor grows with the window */
+main { position: relative; display: flex; flex-direction: column; height: 100vh; padding: 0 var(--space-4) var(--space-4); gap: var(--space-3); }
+main > section { flex: 1; min-height: 0; }
 section { display: flex; flex-direction: column; gap: var(--space-3); }
-section[hidden] { display: none; } /* beats the display:flex above */
 
-/* tabs */
-nav { display: flex; gap: var(--space-1); border-bottom: 1px solid var(--line); }
-nav button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: var(--space-2) var(--space-3); color: var(--muted); background: none; }
-nav button:hover { color: var(--fg); }
-nav button[aria-current="true"] { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+/* slim top bar: window drag region (the window has no title bar) with the note tabs and the icon buttons */
+.topbar { display: flex; align-items: center; gap: var(--space-1); flex: none; padding-top: var(--space-2); border-bottom: 1px solid var(--line); user-select: none; -webkit-user-select: none; }
+.topbar [role="tablist"] { display: flex; gap: var(--space-1); min-width: 0; overflow-x: auto; }
+.topbar .spacer { flex: 1; align-self: stretch; min-width: var(--space-4); }
+.tab { display: flex; align-items: center; flex: none; border-bottom: 2px solid transparent; }
+.tab[data-active="true"] { border-bottom-color: var(--accent); }
+.tab button { border: 0; border-radius: 0; background: none; color: var(--muted); padding: var(--space-2); }
+.tab button[role="tab"] { max-width: 18ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tab[data-active="true"] button[role="tab"] { color: var(--accent); font-weight: 600; }
+.tab button:hover { color: var(--fg); }
+.tab .close { padding: 2px 6px; }
+button.icon { border: 0; background: none; padding: var(--space-1) var(--space-2); font-size: 16px; line-height: 1; }
+
+/* search panel under the top bar */
+.panel { position: absolute; inset: 45px 0 0; z-index: 20; display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-3) var(--space-4); background: var(--bg); }
+.panel > section { flex: 1; min-height: 0; }
+.panel .close-panel { align-self: flex-end; }
 
 /* buttons: secondary by default, .primary for the one main action per view */
 button, .button, input { font: inherit; color: inherit; background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius); padding: 6px var(--space-3); cursor: pointer; transition: background var(--ease), border-color var(--ease), color var(--ease); }
@@ -57,13 +68,22 @@ form[role="search"] { display: flex; gap: var(--space-2); flex: none; }
 [role="alert"] { color: var(--danger); margin: 0; }
 small { color: var(--muted); overflow-wrap: anywhere; }
 
-/* settings */
-form[aria-label="Einstellungen"] { display: grid; gap: var(--space-3); max-width: 420px; align-content: start; }
-form[aria-label="Einstellungen"] button[type="submit"] { justify-self: start; }
+/* settings dialog */
+.backdrop { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: var(--space-4); background: rgb(0 0 0 / 0.4); }
+.dialog { display: grid; gap: var(--space-4); width: min(480px, 100%); max-height: 100%; overflow: auto; padding: var(--space-4); border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg); outline: none; }
+.dialog header { display: flex; justify-content: space-between; align-items: center; }
+.dialog h2 { margin: 0; font-size: 16px; }
+.dialog form { display: grid; gap: var(--space-3); max-width: 420px; align-content: start; }
+.dialog form button[type="submit"] { justify-self: start; }
+.dialog fieldset { display: grid; gap: var(--space-3); margin: 0; padding: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius); }
+.dialog legend { padding: 0 var(--space-1); color: var(--muted); }
+.dialog fieldset button { justify-self: start; }
 label { display: grid; gap: var(--space-1); font-weight: 500; }
+label.check { display: flex; align-items: center; gap: var(--space-2); }
+label.check input { width: auto; }
 
 /* narrow windows: stack the action row, never scroll sideways */
-@media (max-width: 480px) { .actions .status { flex-basis: 100%; margin-left: 0; } main { padding: var(--space-2) var(--space-3) var(--space-3); } }
+@media (max-width: 480px) { .actions .status { flex-basis: 100%; margin-left: 0; } main { padding: 0 var(--space-3) var(--space-3); } }
 
 /* Obsidian-style :shortcode: emoji replacement; the actual character is set by the JS widget */
 .cm-pn-emoji { font-style: normal; }

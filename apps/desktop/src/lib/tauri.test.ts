@@ -1,32 +1,38 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { DEFAULT_HOTKEYS } from "./settings";
 
 type Handler = (e: { state: "Pressed" | "Released" }) => Promise<void>;
-const sc = vi.hoisted(() => ({ handlers: new Map<string, Handler>(), failFor: "" }));
-const win = vi.hoisted(() => ({ show: vi.fn(), unminimize: vi.fn(), setFocus: vi.fn() }));
+const sc = vi.hoisted(() => ({ handlers: new Map<string, Handler>(), failFor: new Set<string>(), unregistered: [] as string[] }));
+const win = vi.hoisted(() => ({ show: vi.fn(), unminimize: vi.fn(), setFocus: vi.fn(), hide: vi.fn(), visible: true, focused: true }));
 vi.mock("@tauri-apps/plugin-global-shortcut", () => ({
-  isRegistered: async () => false,
   register: async (key: string, h: Handler) => {
-    if (key === sc.failFor) throw new Error("already taken");
+    if (sc.failFor.has(key)) throw new Error("already taken");
     sc.handlers.set(key, h);
   },
+  unregister: async (key: string) => {
+    sc.unregistered.push(key);
+    sc.handlers.delete(key);
+  },
 }));
-vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => win }));
+vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => ({ ...win, isVisible: async () => win.visible, isFocused: async () => win.focused }) }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
-const CTRL_ALT = "Control+Alt+V";
-const CMD_SHIFT = "CommandOrControl+Shift+Space";
+const { dictation: CTRL_ALT, toggle: CMD_SHIFT } = DEFAULT_HOTKEYS;
 
-describe("registerHotkey", () => {
+describe("applyHotkeys", () => {
   let events: CustomEvent[];
   const onEvent = (e: Event) => events.push(e as CustomEvent);
+  let applyHotkeys: typeof import("./tauri").applyHotkeys;
   beforeEach(async () => {
     Object.assign(window, { __TAURI_INTERNALS__: {} });
     sc.handlers.clear();
-    sc.failFor = "";
+    sc.failFor.clear();
+    sc.unregistered.length = 0;
+    Object.assign(win, { visible: true, focused: true });
     events = [];
     window.addEventListener("picky:focus-capture", onEvent);
-    const { registerHotkey } = await import("./tauri");
-    await registerHotkey();
+    ({ applyHotkeys } = await import("./tauri"));
+    await applyHotkeys(null, DEFAULT_HOTKEYS);
   });
   afterEach(() => {
     window.removeEventListener("picky:focus-capture", onEvent);
@@ -34,30 +40,60 @@ describe("registerHotkey", () => {
     vi.clearAllMocks();
   });
 
-  it("registers both shortcuts", () => {
+  it("registers both defaults at startup", () => {
     expect([...sc.handlers.keys()]).toEqual([CMD_SHIFT, CTRL_ALT]);
   });
 
-  it.each([[CTRL_ALT, true], [CMD_SHIFT, false]])("%s Pressed shows and focuses the window and fires picky:focus-capture (toggle=%s)", async (key, toggle) => {
-    await sc.handlers.get(key)!({ state: "Pressed" });
+  it("dictation Pressed shows and focuses the window and fires picky:focus-capture with toggle", async () => {
+    await sc.handlers.get(CTRL_ALT)!({ state: "Pressed" });
     expect([win.show, win.unminimize, win.setFocus].map((f) => f.mock.calls.length)).toEqual([1, 1, 1]);
-    expect(events.map((e) => e.detail)).toEqual([{ toggle }]);
+    expect(events.map((e) => e.detail)).toEqual([{ toggle: true }]);
+  });
+
+  it("show/hide Pressed hides a visible focused window, otherwise shows and focuses it", async () => {
+    await sc.handlers.get(CMD_SHIFT)!({ state: "Pressed" });
+    expect(win.hide).toHaveBeenCalledTimes(1);
+    expect(win.show).not.toHaveBeenCalled();
+    for (const [visible, focused] of [[true, false], [false, false]]) {
+      Object.assign(win, { visible, focused });
+      await sc.handlers.get(CMD_SHIFT)!({ state: "Pressed" });
+    }
+    expect([win.hide, win.show, win.unminimize, win.setFocus].map((f) => f.mock.calls.length)).toEqual([1, 2, 2, 2]);
+    expect(events.map((e) => e.detail)).toEqual([{ toggle: false }, { toggle: false }]);
   });
 
   it("ignores Released", async () => {
     await sc.handlers.get(CTRL_ALT)!({ state: "Released" });
+    await sc.handlers.get(CMD_SHIFT)!({ state: "Released" });
     expect(win.show).not.toHaveBeenCalled();
+    expect(win.hide).not.toHaveBeenCalled();
     expect(events).toEqual([]);
   });
 
-  it("logs and continues when a shortcut is taken by another app", async () => {
+  it("a live change unregisters the old key and registers the new one; unchanged keys stay", async () => {
+    sc.unregistered.length = 0;
+    const next = { ...DEFAULT_HOTKEYS, dictation: "Control+Alt+K" };
+    expect(await applyHotkeys(DEFAULT_HOTKEYS, next)).toEqual({ applied: next, errors: {} });
+    expect(sc.unregistered).toEqual([CTRL_ALT]);
+    expect([...sc.handlers.keys()].sort()).toEqual([CMD_SHIFT, "Control+Alt+K"].sort());
+    await sc.handlers.get("Control+Alt+K")!({ state: "Pressed" });
+    expect(events.map((e) => e.detail)).toEqual([{ toggle: true }]);
+  });
+
+  it("a rejected key reports an error, restores the previous key and does not throw", async () => {
+    sc.failFor.add("Control+Alt+K");
+    const next = { ...DEFAULT_HOTKEYS, dictation: "Control+Alt+K" };
+    const r = await applyHotkeys(DEFAULT_HOTKEYS, next);
+    expect(r.applied).toEqual(DEFAULT_HOTKEYS);
+    expect(r.errors).toEqual({ dictation: "already taken" });
+    expect([...sc.handlers.keys()].sort()).toEqual([CMD_SHIFT, CTRL_ALT].sort());
+  });
+
+  it("at startup a taken key is reported, not thrown, and the other hotkey still registers", async () => {
     sc.handlers.clear();
-    sc.failFor = CMD_SHIFT;
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const { registerHotkey } = await import("./tauri");
-    await expect(registerHotkey()).resolves.toBeUndefined();
-    expect(warn).toHaveBeenCalledTimes(1);
+    sc.failFor.add(CMD_SHIFT);
+    const r = await applyHotkeys(null, DEFAULT_HOTKEYS);
+    expect(r.errors).toEqual({ toggle: "already taken" });
     expect([...sc.handlers.keys()]).toEqual([CTRL_ALT]);
-    warn.mockRestore();
   });
 });

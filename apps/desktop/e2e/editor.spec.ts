@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { activeText } from "./helpers";
 
 // Regression for the reported editor bugs; needs the real CodeMirror/Atomic Editor, a jsdom textarea mock cannot show them.
 test("typing keeps focus, lists work, draft survives a tab switch, text is readable", async ({ page }) => {
@@ -21,7 +22,7 @@ test("typing keeps focus, lists work, draft survives a tab switch, text is reada
   await page.keyboard.press("Tab");
   await page.keyboard.type("eingerückt", { delay: 20 });
   await expect(page.locator(".cm-line")).toHaveText(["•eins", "•zwei", "•eingerückt"]);
-  expect(await page.evaluate(() => localStorage.getItem("picky.draft"))).toBe("- eins\n- zwei\n  - eingerückt");
+  expect(await activeText(page)).toBe("- eins\n- zwei\n  - eingerückt");
 
   // 3. readable colours: editor text clearly darker than its background in the light theme
   const [fg, bg] = await page.evaluate(() => {
@@ -31,9 +32,11 @@ test("typing keeps focus, lists work, draft survives a tab switch, text is reada
   const lum = ([r, g, b]: number[]) => 0.2126 * r! + 0.7152 * g! + 0.0722 * b!;
   expect(Math.abs(lum(fg!) - lum(bg!))).toBeGreaterThan(150);
 
-  // 4. draft survives leaving the capture tab
+  // 4. draft survives opening the settings dialog and switching to another note tab and back
   await page.getByRole("button", { name: "Einstellungen" }).click();
-  await page.getByRole("button", { name: "Erfassen" }).click();
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Neue Notiz" }).click();
+  await page.getByRole("tab").first().click();
   await expect(page.locator(".cm-line")).toHaveText(["•eins", "•zwei", "•eingerückt"]);
 });
 
@@ -82,7 +85,7 @@ test("character-by-character typing: no unexpected heading, no line-height jump,
         paragraphFontFamily = fonts[i];
       }
     }
-    const draftLines = (await page.evaluate(() => localStorage.getItem("picky.draft") ?? "")).split("\n");
+    const draftLines = (await activeText(page)).split("\n");
     for (let i = 0; i < lines.length; i++) {
       const cls = classes[i]!;
       const draftLine = draftLines[i] ?? "";
@@ -154,9 +157,9 @@ test("character-by-character typing: no unexpected heading, no line-height jump,
   await step({ type: "press", key: "Tab" }, "Tab indents");
   await step("eingerückt", "nested bullet text");
   await step({ type: "press", key: "Enter" }, "Enter on nested");
-  const beforeShiftTab = await page.evaluate(() => localStorage.getItem("picky.draft") ?? "");
+  const beforeShiftTab = await activeText(page);
   await step({ type: "press", key: "Tab", shiftKey: true }, "Shift-Tab outdents");
-  const afterShiftTab = await page.evaluate(() => localStorage.getItem("picky.draft") ?? "");
+  const afterShiftTab = await activeText(page);
   const beforeLast = beforeShiftTab.split("\n").pop() ?? "";
   const afterLast = afterShiftTab.split("\n").pop() ?? "";
   expect(afterLast.startsWith("  "), `Shift+Tab should outdent; last line went from ${JSON.stringify(beforeLast)} to ${JSON.stringify(afterLast)}`).toBe(false);
@@ -166,7 +169,7 @@ test("character-by-character typing: no unexpected heading, no line-height jump,
   // ---- bullet list: Backspace on an empty "- " item exits the bullet and leaves a clean empty line ----
   await step("- ", "empty bullet item");
   await step({ type: "press", key: "Backspace" }, "Backspace exits empty bullet");
-  const draftAfterBs = await page.evaluate(() => localStorage.getItem("picky.draft") ?? "");
+  const draftAfterBs = await activeText(page);
   expect(draftAfterBs.split("\n").pop(), "Backspace on an empty bullet must leave a completely empty line (indent spaces would nest the next list)").toBe("");
 
   // ---- ordered list ----
@@ -214,7 +217,7 @@ test("character-by-character typing: no unexpected heading, no line-height jump,
     "```", "code hier", "```", "",
     "[label](https://example.org)", "",
   ];
-  expect(await page.evaluate(() => localStorage.getItem("picky.draft"))).toBe(expected.join("\n"));
+  expect(await activeText(page)).toBe(expected.join("\n"));
 
   // ---- final: every DOM line renders what its source line says (DOM line i == source line i) ----
   const dom = await inspect();
@@ -267,7 +270,7 @@ for (const { name, keys, draft } of exits) {
       else await page.keyboard.type(k, { delay: 10 });
     }
     // exact draft
-    expect(await page.evaluate(() => localStorage.getItem("picky.draft"))).toBe(draft);
+    expect(await activeText(page)).toBe(draft);
     // danach: no list/quote classes on the line or its inner cm-atomic-* elements, same padding-left as a plain paragraph line
     const probe = await page.evaluate(() => {
       const lines = [...document.querySelectorAll(".cm-content .cm-line")] as HTMLElement[];

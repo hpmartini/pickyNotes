@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { Hotkeys } from "./settings";
 
 export const inTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -35,27 +36,61 @@ export async function whisperstorm(cmd: "start" | "stop" | "status"): Promise<Wh
   }
 }
 
-/**
- * Global hotkeys, both bring the capture window to the front and fire `picky:focus-capture` (detail.toggle).
- * Ctrl+Alt+V also toggles dictation (first press starts, second stops); it avoids macOS Ctrl+Alt+Space (input-source switch) and WhisperStorm's Option+Space push-to-talk.
- * A key another app already owns is logged and skipped, never thrown.
- */
-export async function registerHotkey(): Promise<void> {
-  if (!inTauri()) return;
-  const [{ register, isRegistered }, { getCurrentWindow }] = await Promise.all([import("@tauri-apps/plugin-global-shortcut"), import("@tauri-apps/api/window")]);
-  for (const [shortcut, toggle] of [["CommandOrControl+Shift+Space", false], ["Control+Alt+V", true]] as const) {
-    try {
-      if (await isRegistered(shortcut)) continue;
-      await register(shortcut, async (e) => {
-        if (e.state !== "Pressed") return;
-        const w = getCurrentWindow();
-        await w.show();
-        await w.unminimize();
-        await w.setFocus();
-        window.dispatchEvent(new CustomEvent("picky:focus-capture", { detail: { toggle } }));
-      });
-    } catch (e) {
-      console.warn(`Hotkey ${shortcut} nicht registriert:`, e);
-    }
-  }
+/** One message per hotkey that could not be registered (taken by another app, or an invalid combination). */
+export type HotkeyErrors = Partial<Record<keyof Hotkeys, string>>;
+
+/** The window comes to the front and the capture view hears about it (detail.toggle = dictation toggle). */
+async function showAndFocus(toggle: boolean) {
+  const w = (await import("@tauri-apps/api/window")).getCurrentWindow();
+  await w.show();
+  await w.unminimize();
+  await w.setFocus();
+  window.dispatchEvent(new CustomEvent("picky:focus-capture", { detail: { toggle } }));
 }
+
+const handlers = {
+  dictation: () => showAndFocus(true),
+  async toggle() {
+    const w = (await import("@tauri-apps/api/window")).getCurrentWindow();
+    if ((await w.isVisible()) && (await w.isFocused())) await w.hide();
+    else await showAndFocus(false);
+  },
+};
+
+/**
+ * Registers the global hotkeys live. `prev` is what is registered now (null at startup), `next` what should be.
+ * A changed key is unregistered and its replacement registered; if the replacement is rejected the old key is restored.
+ * Never throws: returns the keys that apply afterwards plus a message per rejected hotkey.
+ */
+export async function applyHotkeys(prev: Hotkeys | null, next: Hotkeys): Promise<{ applied: Hotkeys; errors: HotkeyErrors }> {
+  const applied = { ...next };
+  const errors: HotkeyErrors = {};
+  if (!inTauri()) return { applied, errors };
+  try {
+    const { register, unregister } = await import("@tauri-apps/plugin-global-shortcut");
+    const reg = (key: string, name: keyof Hotkeys) => register(key, (e) => (e.state === "Pressed" ? handlers[name]() : undefined));
+    for (const name of ["toggle", "dictation"] as const) {
+      const old = prev?.[name];
+      if (old === next[name]) continue;
+      try {
+        // At startup this drops a leftover registration from before a webview reload, whose handler is dead.
+        await unregister(old ?? next[name]).catch(() => {});
+        await reg(next[name], name);
+      } catch (e) {
+        errors[name] = e instanceof Error ? e.message : String(e);
+        if (old) {
+          applied[name] = old;
+          await reg(old, name).catch(() => {});
+        }
+      }
+    }
+  } catch (e) {
+    // plugin missing: every hotkey that was asked to change failed
+    for (const name of ["toggle", "dictation"] as const) if (prev?.[name] !== next[name]) errors[name] = e instanceof Error ? e.message : String(e);
+  }
+  return { applied, errors };
+}
+
+/** macOS Dock icon (activation policy) and menu-bar icon; Rust applies and persists them. No-ops in the browser. */
+export const setDockVisible = (visible: boolean): Promise<void> => (inTauri() ? invoke("set_dock_visible", { visible }) : Promise.resolve());
+export const setTrayVisible = (visible: boolean): Promise<void> => (inTauri() ? invoke("set_tray_visible", { visible }) : Promise.resolve());

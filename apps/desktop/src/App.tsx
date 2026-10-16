@@ -1,12 +1,12 @@
 import { createClient, type PickyClient } from "@pickynotes/shared";
 import { useEffect, useMemo, useState } from "react";
 import { CaptureView } from "./CaptureView";
+import { addNote, closeNote, loadNotes, noteTitle, saveNotes, setNoteText } from "./lib/notes";
 import { CaptureQueue } from "./lib/queue";
-import { registerHotkey, screenshot, token } from "./lib/tauri";
+import { loadHotkeys } from "./lib/settings";
+import { applyHotkeys, inTauri, screenshot, token } from "./lib/tauri";
 import { SearchView } from "./SearchView";
-
-const URL_KEY = "picky.url";
-type Tab = "capture" | "search" | "settings";
+import { SettingsModal, URL_KEY } from "./SettingsModal";
 
 async function client(): Promise<PickyClient> {
   const baseUrl = localStorage.getItem(URL_KEY);
@@ -16,58 +16,76 @@ async function client(): Promise<PickyClient> {
 }
 
 export function App() {
-  const [tab, setTab] = useState<Tab>("capture");
+  const [notes, setNotes] = useState(loadNotes);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
   const [hotkey, setHotkey] = useState<{ toggle: boolean } | null>(null);
   const queue = useMemo(() => new CaptureQueue(), []);
   const send = async (i: Parameters<PickyClient["capture"]>[0]) => (await client()).capture(i);
 
+  useEffect(() => saveNotes(notes), [notes]);
+
   useEffect(() => {
-    registerHotkey().catch(console.error);
-    // Here, not in CaptureView: only App can switch the tab. CaptureView stays mounted so a running recording survives tab switches.
-    const onHotkey = (e: Event) => (setTab("capture"), setHotkey({ toggle: !!(e as CustomEvent).detail?.toggle }));
+    void applyHotkeys(null, loadHotkeys()).then(({ errors }) => Object.keys(errors).length && console.warn("Hotkeys nicht registriert:", errors));
+    // Here, not in CaptureView: only App can close the search panel. CaptureView stays mounted so a running recording survives tab switches.
+    const onHotkey = (e: Event) => (setSearchOpen(false), setHotkey({ toggle: !!(e as CustomEvent).detail?.toggle }));
     window.addEventListener("picky:focus-capture", onHotkey);
+    // Capture phase: CodeMirror's mac keymap binds Ctrl-n and would swallow it while the editor has focus.
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
+      if (e.key === ",") (e.preventDefault(), setSettingsOpen(true));
+      else if (e.key.toLowerCase() === "n") (e.preventDefault(), setNotes(addNote));
+    };
+    window.addEventListener("keydown", onKey, true);
     const flush = () => void queue.flush(send).catch(() => {});
     window.addEventListener("online", flush);
     const timer = setInterval(flush, 30_000);
     flush();
-    return () => (window.removeEventListener("online", flush), window.removeEventListener("picky:focus-capture", onHotkey), clearInterval(timer));
+    // The tray menu entry "Einstellungen" (Rust) asks the webview to open the dialog.
+    const unlisten = inTauri() ? import("@tauri-apps/api/event").then((m) => m.listen("picky:open-settings", () => setSettingsOpen(true))) : undefined;
+    return () => {
+      window.removeEventListener("picky:focus-capture", onHotkey);
+      window.removeEventListener("keydown", onKey, true);
+      window.removeEventListener("online", flush);
+      clearInterval(timer);
+      void unlisten?.then((f) => f());
+    };
   }, [queue]);
 
   return (
     <main>
-      <nav aria-label="Ansicht">
-        {(["capture", "search", "settings"] as const).map((t) => (
-          <button key={t} aria-current={tab === t} onClick={() => setTab(t)}>
-            {{ capture: "Erfassen", search: "Suche", settings: "Einstellungen" }[t]}
-          </button>
-        ))}
-      </nav>
-      <CaptureView queue={queue} send={send} screenshot={screenshot} hotkey={hotkey} onHotkeyHandled={() => setHotkey(null)} hidden={tab !== "capture"} />
-      {tab === "search" && <SearchView search={async (q) => (await (await client()).search(q)).hits} />}
-      {tab === "settings" && <Settings />}
+      <header className="topbar" data-tauri-drag-region>
+        <div role="tablist" aria-label="Notizen" data-tauri-drag-region>
+          {notes.notes.map((n) => (
+            <div key={n.id} role="presentation" className="tab" data-active={n.id === notes.active}>
+              <button role="tab" aria-selected={n.id === notes.active} onClick={() => setNotes((s) => ({ ...s, active: n.id }))}>{noteTitle(n.text)}</button>
+              <button className="close" aria-label="Notiz schließen" onClick={() => setNotes((s) => closeNote(s, n.id))}>×</button>
+            </div>
+          ))}
+        </div>
+        <button className="icon" aria-label="Neue Notiz" title="Neue Notiz (Strg/Cmd+N)" onClick={() => setNotes(addNote)}>+</button>
+        <span className="spacer" data-tauri-drag-region />
+        <button className="icon" aria-label="Suche" onClick={() => setSearchOpen(true)}>⌕</button>
+        <button className="icon" aria-label="Einstellungen" title="Einstellungen (Strg/Cmd+,)" onClick={() => setSettingsOpen(true)}>⚙</button>
+      </header>
+      <CaptureView
+        queue={queue}
+        send={send}
+        screenshot={screenshot}
+        hotkey={hotkey}
+        onHotkeyHandled={() => setHotkey(null)}
+        notes={notes.notes}
+        activeId={notes.active}
+        onChange={(text) => setNotes((s) => setNoteText(s, s.active, text))}
+        onSent={(id) => setNotes((s) => closeNote(s, id))}
+      />
+      {searchOpen && (
+        <div className="panel">
+          <button className="close-panel" onClick={() => setSearchOpen(false)}>Suche schließen</button>
+          <SearchView search={async (q) => (await (await client()).search(q)).hits} />
+        </div>
+      )}
+      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
     </main>
-  );
-}
-
-function Settings() {
-  const [url, setUrl] = useState(localStorage.getItem(URL_KEY) ?? "");
-  const [tok, setTok] = useState("");
-  const [saved, setSaved] = useState(false);
-  return (
-    <form
-      aria-label="Einstellungen"
-      onSubmit={async (e) => {
-        e.preventDefault();
-        localStorage.setItem(URL_KEY, url.trim());
-        if (tok) await token.set(tok.trim());
-        setTok("");
-        setSaved(true);
-      }}
-    >
-      <label>Server-URL <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://notes.example.net" /></label>
-      <label>Geräte-Token <input type="password" value={tok} onChange={(e) => setTok(e.target.value)} placeholder="leer = unverändert" autoComplete="off" /></label>
-      <button type="submit">Speichern</button>
-      {saved && <p role="status">Gespeichert (Token im Schlüsselbund).</p>}
-    </form>
   );
 }

@@ -6,26 +6,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { CaptureQueue, QueuedCapture, Send } from "./lib/queue";
 import { inTauri, whisperstorm } from "./lib/tauri";
 import { readAttachmentsForSend, dropAttachments } from "./lib/attachments";
+import type { Note } from "./lib/notes";
 import { dispatchInsertTable, editorExtensions, insertAttachmentAt, insertTextAtCursor } from "./lib/editor";
 
 const MAX_BYTES = 100 * 1024 * 1024; // sanity cap against freezing the webview; the server decides (413 above MAX_ATTACHMENT_MB without an object store)
-
-// The draft survives tab switches (CaptureView unmounts) and restarts.
-const DRAFT_KEY = "picky.draft";
-const loadDraft = () => {
-  try {
-    return localStorage.getItem(DRAFT_KEY) ?? "";
-  } catch {
-    return "";
-  }
-};
-const saveDraft = (text: string) => {
-  try {
-    text ? localStorage.setItem(DRAFT_KEY, text) : localStorage.removeItem(DRAFT_KEY);
-  } catch {
-    /* storage unavailable: draft stays in memory only */
-  }
-};
 
 interface Props {
   queue: CaptureQueue;
@@ -34,17 +18,18 @@ interface Props {
   /** Global hotkey request: focus the editor, and start/stop dictation when `toggle`. */
   hotkey?: { toggle: boolean } | null;
   onHotkeyHandled?: () => void;
-  /** Not the active tab: stays mounted (recording state survives) but invisible. */
-  hidden?: boolean;
+  /** All open notes; the active one is edited. Links in the others keep their attachment bytes. */
+  notes: Note[];
+  activeId: string;
+  onChange: (text: string) => void;
+  /** The note was delivered and is unchanged: close its tab (or clear it if it is the last). */
+  onSent: (id: string) => void;
 }
 
-export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled, hidden }: Props) {
-  const [text, setText] = useState(loadDraft);
-  useEffect(() => saveDraft(text), [text]);
-  const textRef = useRef(text);
-  textRef.current = text;
-  // Without a stable documentId the editor's identity is its initial markdownSource, so every keystroke would remount it and drop focus.
-  const [docId, setDocId] = useState(0);
+export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled, notes, activeId, onChange, onSent }: Props) {
+  const text = notes.find((n) => n.id === activeId)?.text ?? "";
+  const notesRef = useRef(notes);
+  notesRef.current = notes;
   const [status, setStatus] = useState("");
   const [recording, setRecording] = useState(false);
   const [starting, setStarting] = useState(false); // start can wait on the microphone prompt for up to 30 s
@@ -99,13 +84,15 @@ export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled, 
   async function sendText() {
     if (!text.trim()) return;
     const sent = text;
-    // The user may keep typing while the send is pending; clear only if the editor still holds what was sent. A rejected draft stays.
+    const id = activeId;
+    // The user may keep typing, or switch tabs, while the send is pending; close only if that note still holds what was sent. A rejected draft stays.
     const attachments = await readAttachmentsForSend(sent);
     if (await submit({ kind: "text", source: "typed", text: sent, ...(attachments.length ? { attachments } : {}) })) {
-      await dropAttachments(sent, textRef.current === sent ? "" : textRef.current); // the user kept typing: links still in the live draft keep their bytes
-      if (textRef.current === sent) {
-        setText("");
-        setDocId((n) => n + 1); // remount the editor empty; markdownSource is only read at mount
+      // Links still in another open note, or in this one after the user kept typing, keep their bytes.
+      const live = notesRef.current;
+      await dropAttachments(sent, live.filter((n) => n.id !== id || n.text !== sent).map((n) => n.text).join("\n"));
+      if (notesRef.current.find((n) => n.id === id)?.text === sent) {
+        onSent(id);
       }
     }
   }
@@ -141,6 +128,13 @@ export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled, 
       setStarting(false);
     }
   }
+
+  // A new or switched note takes the cursor, so typing can start right away.
+  const mounted = useRef(false);
+  useEffect(() => {
+    if (mounted.current) editorRef.current?.getContentDOM()?.focus();
+    mounted.current = true;
+  }, [activeId]);
 
   const toggleRef = useRef(toggleRecording);
   toggleRef.current = toggleRecording;
@@ -178,12 +172,12 @@ export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled, 
   const extensions = useMemo(() => editorExtensions, []);
 
   return (
-    <section aria-label="Erfassen" hidden={hidden}>
+    <section aria-label="Erfassen">
       <div className="editor">
         <AtomicCodeMirrorEditor
-          documentId={`capture-${docId}`}
+          documentId={activeId} // the editor reads markdownSource only at mount; a stable id per note keeps focus while typing, a new note id remounts it
           markdownSource={text}
-          onMarkdownChange={setText}
+          onMarkdownChange={onChange}
           extensions={extensions}
           editorHandleRef={editorRef}
         />

@@ -1,6 +1,7 @@
 import "fake-indexeddb/auto";
 import { ApiError } from "@pickynotes/shared";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { useState, type ComponentProps } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { CaptureView } from "./CaptureView";
@@ -41,19 +42,41 @@ vi.mock("./lib/tauri", async (orig) => {
 afterEach(() => (cleanup(), localStorage.clear(), (ws.calls.length = 0), (ws.replies.length = 0)));
 let n = 0;
 
+/** CaptureView is controlled by App; this keeps one note in state like App does. */
+function Capture(p: Omit<ComponentProps<typeof CaptureView>, "notes" | "activeId" | "onChange" | "onSent">) {
+  const [note, setNote] = useState({ id: "n1", text: "" });
+  return <CaptureView {...p} notes={[note]} activeId={note.id} onChange={(text) => setNote({ ...note, text })} onSent={() => setNote({ id: crypto.randomUUID(), text: "" })} />;
+}
+
 describe("CaptureView", () => {
-  it("restores the draft after the view is unmounted and mounted again", () => {
-    const queue = new CaptureQueue(`c${n++}`);
-    const first = render(<CaptureView queue={queue} send={vi.fn()} />);
-    fireEvent.change(screen.getByLabelText("Editor"), { target: { value: "- Entwurf" } });
-    first.unmount();
-    render(<CaptureView queue={queue} send={vi.fn()} />);
-    expect((screen.getByLabelText("Editor") as HTMLTextAreaElement).value).toBe("- Entwurf");
+  it("shows the active note's text and reports edits for it", () => {
+    const onChange = vi.fn();
+    const notes = [{ id: "a", text: "eins" }, { id: "b", text: "zwei" }];
+    const ui = (activeId: string) => <CaptureView queue={new CaptureQueue(`c${n++}`)} send={vi.fn()} notes={notes} activeId={activeId} onChange={onChange} onSent={vi.fn()} />;
+    const r = render(ui("a"));
+    expect((screen.getByLabelText("Editor") as HTMLTextAreaElement).value).toBe("eins");
+    r.rerender(ui("b"));
+    expect((screen.getByLabelText("Editor") as HTMLTextAreaElement).value).toBe("zwei"); // switching notes remounts the editor with the other text
+    fireEvent.change(screen.getByLabelText("Editor"), { target: { value: "zwei!" } });
+    expect(onChange).toHaveBeenCalledWith("zwei!");
+  });
+
+  it("a link that also sits in another open note keeps its attachment bytes after save", async () => {
+    const { stashAttachment, getAttachment } = await import("./lib/attachments");
+    const shared = await stashAttachment({ name: "a.pdf", mime: "application/pdf", bytes: new Uint8Array([1]) });
+    const own = await stashAttachment({ name: "b.pdf", mime: "application/pdf", bytes: new Uint8Array([2]) });
+    const onSent = vi.fn();
+    const notes = [{ id: "a", text: `[a](${shared.markdownTarget}) [b](${own.markdownTarget})` }, { id: "b", text: `[a](${shared.markdownTarget})` }];
+    render(<CaptureView queue={new CaptureQueue(`c${n++}`)} send={vi.fn(async () => ({ id: "1" }))} notes={notes} activeId="a" onChange={vi.fn()} onSent={onSent} />);
+    fireEvent.click(screen.getByRole("button", { name: "Speichern" }));
+    await waitFor(() => expect(onSent).toHaveBeenCalledWith("a"));
+    expect(await getAttachment(shared.id)).toBeDefined();
+    expect(await getAttachment(own.id)).toBeUndefined();
   });
 
   it("keeps the same editor instance (and focus) while typing", () => {
     editorMounts.count = 0;
-    render(<CaptureView queue={new CaptureQueue(`c${n++}`)} send={vi.fn()} />);
+    render(<Capture queue={new CaptureQueue(`c${n++}`)} send={vi.fn()} />);
     const editor = screen.getByLabelText("Editor");
     for (const value of ["a", "ab", "abc"]) fireEvent.change(editor, { target: { value } });
     expect(screen.getByLabelText("Editor")).toBe(editor);
@@ -62,7 +85,7 @@ describe("CaptureView", () => {
 
   it("sends typed text through the queue and clears the editor", async () => {
     const send = vi.fn(async () => ({ id: "1" }));
-    render(<CaptureView queue={new CaptureQueue(`c${n++}`)} send={send} />);
+    render(<Capture queue={new CaptureQueue(`c${n++}`)} send={send} />);
     const save = screen.getByRole("button", { name: "Speichern" });
     expect((save as HTMLButtonElement).disabled).toBe(true);
     fireEvent.change(screen.getByLabelText("Editor"), { target: { value: "ein Gedanke" } });
@@ -75,7 +98,7 @@ describe("CaptureView", () => {
   it("buffers offline and delivers on the next flush", async () => {
     const queue = new CaptureQueue(`c${n++}`);
     const send = vi.fn().mockRejectedValueOnce(new TypeError("offline")).mockResolvedValue({ id: "1" });
-    render(<CaptureView queue={queue} send={send} />);
+    render(<Capture queue={queue} send={send} />);
     fireEvent.change(screen.getByLabelText("Editor"), { target: { value: "offline" } });
     fireEvent.click(screen.getByRole("button", { name: "Speichern" }));
     await waitFor(() => expect(screen.getByRole("status").textContent).toContain("Offline gepuffert (1"));
@@ -85,7 +108,7 @@ describe("CaptureView", () => {
 
   it("uploads a picked file as an inline attachment in the next text capture", async () => {
     const send = vi.fn(async () => ({ id: "1" }));
-    render(<CaptureView queue={new CaptureQueue(`c${n++}`)} send={send} />);
+    render(<Capture queue={new CaptureQueue(`c${n++}`)} send={send} />);
     // The mock editor ignores files it doesn't know about, so we set the value to the link the production path would insert, then click Save to flush the capture.
     fireEvent.change(screen.getByLabelText("Editor"), { target: { value: "siehe [a.txt](pending:abc)" } });
     fireEvent.click(screen.getByRole("button", { name: "Speichern" }));
@@ -98,7 +121,7 @@ describe("CaptureView", () => {
     const kept = await stashAttachment({ name: "a.pdf", mime: "application/pdf", bytes: new Uint8Array([1, 2, 3]) });
     const stray = await stashAttachment({ name: "weg.png", mime: "image/png", bytes: new Uint8Array([9]) });
     const send = vi.fn(async () => ({ id: "1" }));
-    render(<CaptureView queue={new CaptureQueue(`c${n++}`)} send={send} />);
+    render(<Capture queue={new CaptureQueue(`c${n++}`)} send={send} />);
     fireEvent.change(screen.getByLabelText("Editor"), { target: { value: `siehe [a.pdf](${kept.markdownTarget})` } });
     fireEvent.click(screen.getByRole("button", { name: "Speichern" }));
     await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Gesendet"));
@@ -113,7 +136,7 @@ describe("CaptureView", () => {
     const gone = await stashAttachment({ name: "weg.pdf", mime: "application/pdf", bytes: new Uint8Array([2]) });
     let finish!: () => void;
     const send = vi.fn(() => new Promise<{ id: string }>((resolve) => (finish = () => resolve({ id: "1" }))));
-    render(<CaptureView queue={new CaptureQueue(`c${n++}`)} send={send} />);
+    render(<Capture queue={new CaptureQueue(`c${n++}`)} send={send} />);
     const sent = `[bleibt.pdf](${still.markdownTarget}) [weg.pdf](${gone.markdownTarget})`;
     fireEvent.change(screen.getByLabelText("Editor"), { target: { value: sent } });
     fireEvent.click(screen.getByRole("button", { name: "Speichern" }));
@@ -126,7 +149,7 @@ describe("CaptureView", () => {
   });
 
   it("STT without a running WhisperStorm shows a clear message and does not switch to Stopp", async () => {
-    render(<CaptureView queue={new CaptureQueue(`c${n++}`)} send={vi.fn()} />);
+    render(<Capture queue={new CaptureQueue(`c${n++}`)} send={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "STT" }));
     await waitFor(() => expect(screen.getByRole("status").textContent).toBe("WhisperStorm läuft nicht"));
     expect(screen.queryByRole("button", { name: "Stopp" })).toBeNull();
@@ -135,7 +158,7 @@ describe("CaptureView", () => {
   it("STT shows a pending state and disables the button while start is running", async () => {
     let reply!: (r: unknown) => void;
     ws.replies.push(new Promise((res) => (reply = res)) as never);
-    render(<CaptureView queue={new CaptureQueue(`c${n++}`)} send={vi.fn()} />);
+    render(<Capture queue={new CaptureQueue(`c${n++}`)} send={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "STT" }));
     await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Starte Aufnahme…"));
     expect((screen.getByRole("button", { name: "STT" }) as HTMLButtonElement).disabled).toBe(true);
@@ -150,7 +173,7 @@ describe("CaptureView", () => {
     ["non-empty", "Hallo Welt", "Transkript eingefügt."],
   ])("STT stop with %s transcript shows the matching message", async (_n, text, message) => {
     ws.replies.push({ ok: true, phase: "recording" }, { ok: true, phase: "success", text });
-    render(<CaptureView queue={new CaptureQueue(`c${n++}`)} send={vi.fn()} />);
+    render(<Capture queue={new CaptureQueue(`c${n++}`)} send={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "STT" }));
     fireEvent.click(await screen.findByRole("button", { name: "Stopp" }));
     await waitFor(() => expect(screen.getByRole("status").textContent).toBe(message));
@@ -160,7 +183,7 @@ describe("CaptureView", () => {
   it("keeps the text the user typed while the send was pending", async () => {
     let finish!: () => void;
     const send = vi.fn(() => new Promise<{ id: string }>((resolve) => (finish = () => resolve({ id: "1" }))));
-    render(<CaptureView queue={new CaptureQueue(`c${n++}`)} send={send} />);
+    render(<Capture queue={new CaptureQueue(`c${n++}`)} send={send} />);
     fireEvent.change(screen.getByLabelText("Editor"), { target: { value: "erster Gedanke" } });
     fireEvent.click(screen.getByRole("button", { name: "Speichern" }));
     await waitFor(() => expect(send).toHaveBeenCalled());
@@ -173,7 +196,7 @@ describe("CaptureView", () => {
   it("shows rejected captures as Abgelehnt, keeps the draft, and offers retry and discard", async () => {
     const queue = new CaptureQueue(`c${n++}`);
     const send = vi.fn().mockRejectedValueOnce(new ApiError(413, "too big")).mockResolvedValue({ id: "1" });
-    render(<CaptureView queue={queue} send={send} />);
+    render(<Capture queue={queue} send={send} />);
     fireEvent.change(screen.getByLabelText("Editor"), { target: { value: "x" } });
     fireEvent.click(screen.getByRole("button", { name: "Speichern" }));
     await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Abgelehnt: too big"));
@@ -192,7 +215,7 @@ describe("CaptureView", () => {
     await bad.enqueue({ kind: "text", source: "typed", text: "alt" });
     await bad.flush(async () => Promise.reject(new ApiError(400, "invalid")));
     cleanup();
-    render(<CaptureView queue={bad} send={send} />);
+    render(<Capture queue={bad} send={send} />);
     fireEvent.click(await screen.findByRole("button", { name: "Verwerfen" }));
     await waitFor(() => expect(screen.queryByRole("region", { name: "Abgelehnte Captures" })).toBeNull());
     expect(await bad.list()).toEqual([]);
@@ -200,7 +223,7 @@ describe("CaptureView", () => {
 
   describe("global hotkey request", () => {
     const mount = (hotkey: { toggle: boolean } | null, onHotkeyHandled = vi.fn()) => {
-      const ui = (h: typeof hotkey) => <CaptureView queue={queue} send={vi.fn()} hotkey={h} onHotkeyHandled={onHotkeyHandled} />;
+      const ui = (h: typeof hotkey) => <Capture queue={queue} send={vi.fn()} hotkey={h} onHotkeyHandled={onHotkeyHandled} />;
       const queue = new CaptureQueue(`c${n++}`);
       const r = render(ui(hotkey));
       return { onHotkeyHandled, press: (toggle: boolean) => r.rerender(ui({ toggle })) };
@@ -230,6 +253,8 @@ describe("CaptureView", () => {
       press();
       expect(await screen.findByRole("button", { name: "Stopp" })).toBeTruthy();
       fireEvent.click(screen.getByRole("button", { name: "Suche" }));
+      fireEvent.click(screen.getByRole("button", { name: "Neue Notiz" })); // a new tab remounts the editor, not the recording
+      expect(screen.getAllByRole("tab")).toHaveLength(2);
       press();
       await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Transkript eingefügt."));
       expect(ws.calls).toEqual(["start", "stop"]);
@@ -250,5 +275,45 @@ describe("CaptureView", () => {
       expect(await screen.findByRole("button", { name: "Stopp" })).toBeTruthy();
       expect(ws.calls).toEqual(["start"]);
     });
+  });
+});
+
+describe("App shell", () => {
+  it("Ctrl+, opens the settings dialog, Esc and the close button close it", () => {
+    render(<App />);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    fireEvent.keyDown(window, { key: ",", ctrlKey: true });
+    expect(screen.getByRole("dialog", { name: "Einstellungen" })).toBeTruthy();
+    expect(screen.getByLabelText("Server-URL")).toBeTruthy();
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Einstellungen" }));
+    fireEvent.click(screen.getByRole("button", { name: "Einstellungen schließen" }));
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("Settings and Suche are no tabs; Suche opens a closable panel", () => {
+    render(<App />);
+    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Neue Notiz"]);
+    fireEvent.click(screen.getByRole("button", { name: "Suche" }));
+    expect(screen.getByRole("search")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Suche schließen" }));
+    expect(screen.queryByRole("search")).toBeNull();
+  });
+
+  it("Ctrl+N opens a note tab, tabs switch the editor text, close removes a tab, the last is cleared", () => {
+    localStorage.setItem("picky.draft", "# Erste");
+    render(<App />);
+    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["# Erste"]); // legacy draft migrated into the first tab
+    fireEvent.keyDown(window, { key: "n", ctrlKey: true });
+    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["# Erste", "Neue Notiz"]);
+    fireEvent.change(screen.getByLabelText("Editor"), { target: { value: "Zweite" } });
+    fireEvent.click(screen.getAllByRole("tab")[0]!);
+    expect((screen.getByLabelText("Editor") as HTMLTextAreaElement).value).toBe("# Erste");
+    fireEvent.click(screen.getAllByRole("button", { name: "Notiz schließen" })[0]!);
+    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Zweite"]);
+    fireEvent.click(screen.getByRole("button", { name: "Notiz schließen" }));
+    expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Neue Notiz"]);
+    expect((screen.getByLabelText("Editor") as HTMLTextAreaElement).value).toBe("");
   });
 });

@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import type { Page } from "@playwright/test";
+import { activeText, mockTauri } from "./helpers";
 
 // Per-feature character-by-character e2e: types one keystroke at a time, after each one asserts the
 // rendered DOM and (where it matters) the saved draft. A screenshot per step lands under test-results/
@@ -52,7 +53,7 @@ test("emoji :rocket: renders as the Unicode glyph, source intact", async ({ page
   await steps(page, "emoji", [":rocket:"]);
   // The widget replaces the source in the rendered DOM; the source itself stays in the draft.
   expect(await page.locator(".cm-pn-emoji").first().textContent()).toBe("🚀");
-  expect(await page.evaluate(() => localStorage.getItem("picky.draft"))).toBe(":rocket:");
+  expect(await activeText(page)).toBe(":rocket:");
 });
 
 test("task checkbox: typing - [ ] produces a clickable checkbox; clicking toggles the markdown", async ({ page }) => {
@@ -60,15 +61,15 @@ test("task checkbox: typing - [ ] produces a clickable checkbox; clicking toggle
   const editor = page.locator(".cm-content");
   await editor.click();
   await steps(page, "task", ["- [ ] aufgabe"]);
-  const draft = await page.evaluate(() => localStorage.getItem("picky.draft") ?? "");
+  const draft = await activeText(page);
   expect(draft).toBe("- [ ] aufgabe");
   const checkbox = page.locator(".cm-atomic-task-checkbox").first();
   await expect(checkbox).toBeVisible();
   await checkbox.click();
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("picky.draft") ?? "")).toBe("- [x] aufgabe");
+  await expect.poll(() => activeText(page)).toBe("- [x] aufgabe");
   // toggle back
   await page.locator(".cm-atomic-task-checkbox").first().click();
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("picky.draft") ?? "")).toBe("- [ ] aufgabe");
+  await expect.poll(() => activeText(page)).toBe("- [ ] aufgabe");
 });
 
 test("table: 3-column table, align center via toolbar", async ({ page }) => {
@@ -77,7 +78,7 @@ test("table: 3-column table, align center via toolbar", async ({ page }) => {
   await editor.click();
   await steps(page, "table", ["| a | b |", { key: "Enter" }, "| --- | --- |", { key: "Enter" }, "| 1 | 2 |"]);
   // The parser canonicalises the delimiter row (always `---` per cell, alignment gone). Verify a table formed.
-  const draft = await page.evaluate(() => localStorage.getItem("picky.draft") ?? "");
+  const draft = await activeText(page);
   expect(draft.split("\n")).toContain("| a | b |");
   const delim = draft.split("\n").find((l) => /^\|/.test(l) && l.includes("---"));
   expect(delim, "delimiter row must contain ---").toBeTruthy();
@@ -88,10 +89,10 @@ test("table: 3-column table, align center via toolbar", async ({ page }) => {
   await expect(toolbar).toBeVisible();
   // Center-align all columns via the toolbar.
   await toolbar.getByRole("button", { name: "⇔ C" }).click();
-  await expect.poll(() => page.evaluate(() => localStorage.getItem("picky.draft") ?? "")).toContain(":---:");
+  await expect.poll(() => activeText(page)).toContain(":---:");
 });
 
-const getDraft = (page: Page) => page.evaluate(() => localStorage.getItem("picky.draft") ?? "");
+const getDraft = (page: Page) => activeText(page);
 
 for (const [typed, expected] of [["- [", "- [ ] "], ["- [ ", "- [ ] "], ["- [ ]", "- [ ] "], ["- [x]", "- [x] "], ["- [X]", "- [x] "]] as const) {
   test(`task input: typing "${typed}" char by char yields a real checkbox that toggles`, async ({ page }) => {
@@ -251,25 +252,6 @@ test("drop: a PDF dropped at the cursor becomes a [name](pending:id) chip and it
   await page.locator(".editor").screenshot({ path: test.info().outputPath("pdf-drop.png") });
 });
 
-const PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
-
-/** Pretends to be the Tauri webview: `invoke` answers from `window.__ws`/`__png`, records every call in `window.__calls`. */
-async function mockTauri(page: Page, ws: { start: unknown; stop?: unknown }) {
-  await page.addInitScript(([w, png]) => {
-    const calls: [string, unknown][] = [];
-    Object.assign(window, { __calls: calls, __TAURI_INTERNALS__: {
-      transformCallback: () => 0,
-      invoke: async (cmd: string, args: { cmd?: "start" | "stop" }) => {
-        calls.push([cmd, args]);
-        if (cmd === "whisperstorm") return (w as Record<string, unknown>)[args.cmd!];
-        if (cmd === "screenshot") return png;
-        if (cmd === "plugin:global-shortcut|is_registered") return true;
-        return null;
-      },
-    } });
-  }, [ws, PNG_B64] as const);
-}
-
 test("speech: STT starts WhisperStorm, Stopp inserts the transcript at the cursor", async ({ page }) => {
   await mockTauri(page, { start: { ok: true, phase: "recording" }, stop: { ok: true, phase: "idle", text: "Hallo Welt" } });
   await page.goto("/");
@@ -286,12 +268,12 @@ test("speech: STT starts WhisperStorm, Stopp inserts the transcript at the curso
 test("speech: the global hotkey event focuses the editor and toggles dictation (start, then stop)", async ({ page }) => {
   await mockTauri(page, { start: { ok: true, phase: "recording" }, stop: { ok: true, phase: "idle", text: "Hallo Hotkey" } });
   await page.goto("/");
-  await page.getByRole("button", { name: "Einstellungen" }).click(); // the hotkey must also work from another tab
+  await page.getByRole("button", { name: "Neue Notiz" }).click(); // the hotkey must also work with another note active
   const press = () => page.evaluate(() => window.dispatchEvent(new CustomEvent("picky:focus-capture", { detail: { toggle: true } })));
   await press();
   await expect(page.getByRole("button", { name: "Stopp" })).toBeVisible();
   await expect(page.locator(".cm-content")).toBeFocused();
-  await page.getByRole("button", { name: "Suche" }).click(); // the recording must survive a tab switch
+  await page.getByRole("button", { name: "Suche", exact: true }).click(); // the recording must survive the search panel opening
   await press();
   await expect(page.getByRole("status")).toHaveText("Transkript eingefügt.");
   await expect.poll(() => getDraft(page)).toContain("Hallo Hotkey");
@@ -327,16 +309,15 @@ test("paste: pasting an image inserts an inline `![name](pending:<id>)` link", a
   const editor = page.locator(".cm-content");
   await editor.click();
   // Programmatically dispatch a paste with an image file (the real browser clipboard can't be driven from headless).
-  const inserted = await page.evaluate(async () => {
+  await page.evaluate(async () => {
     const file = new File([Uint8Array.from(atob("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="), (c) => c.charCodeAt(0))], "bild.png", { type: "image/png" });
     const dt = new DataTransfer();
     dt.items.add(file);
     const event = new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true });
     document.querySelector(".cm-content")!.dispatchEvent(event);
     await new Promise((r) => setTimeout(r, 250));
-    return localStorage.getItem("picky.draft") ?? "";
   });
-  expect(inserted).toMatch(/!\[[^\]]*\]\(pending:[a-f0-9-]+\)/);
+  expect(await activeText(page)).toMatch(/!\[[^\]]*\]\(pending:[a-f0-9-]+\)/);
   await expect(page.locator(".cm-content .cm-atomic-image img")).toHaveCount(1);
   await expect(page.locator(".cm-content .cm-atomic-image img")).toHaveAttribute("src", /^blob:/);
   await page.screenshot({ path: "test-results/paste-image.png" });
