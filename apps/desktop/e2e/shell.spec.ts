@@ -25,6 +25,21 @@ test.describe("settings modal", () => {
     await expect(dialog(page)).toHaveCount(0);
   });
 
+  test("focus returns to the opener after Esc, and Tab stays inside the dialog", async ({ page }) => {
+    await page.goto("/");
+    await page.locator(".cm-content").click();
+    await page.keyboard.press("Control+,");
+    await expect(dialog(page)).toBeFocused();
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".cm-content")).toBeFocused();
+    const gear = page.getByRole("button", { name: "Einstellungen" });
+    await gear.click();
+    for (let i = 0; i < 12; i++) await page.keyboard.press("Tab");
+    expect(await dialog(page).evaluate((d) => d.contains(document.activeElement))).toBe(true);
+    await page.keyboard.press("Escape");
+    await expect(gear).toBeFocused();
+  });
+
   test("URL and token save as before", async ({ page }) => {
     await page.goto("/");
     await openSettings(page);
@@ -51,6 +66,16 @@ test.describe("settings modal", () => {
     await dialog(page).getByRole("button", { name: "Zurücksetzen" }).click();
     await expect(field).toHaveValue("Control+Alt+V");
     expect((await registered(page)).at(-1)).toBe("Control+Alt+V");
+  });
+
+  test("capturing Control+N in a hotkey field does not open a note tab", async ({ page }) => {
+    await mockTauri(page, NO_WS);
+    await page.goto("/");
+    await openSettings(page);
+    await dialog(page).getByLabel("Diktat starten/stoppen").focus();
+    await page.keyboard.press("Control+n");
+    await expect(dialog(page).getByLabel("Diktat starten/stoppen")).toHaveValue("Control+N");
+    await expect(page.getByRole("tab")).toHaveCount(1);
   });
 
   test("a rejected hotkey shows an error and keeps the previous one; a bare key is ignored", async ({ page }) => {

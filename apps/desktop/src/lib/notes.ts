@@ -36,11 +36,13 @@ export function closeNote(s: NotesState, id: string): NotesState {
   return { active: s.active === id ? notes[Math.min(i, notes.length - 1)]!.id : s.active, notes };
 }
 
-export function saveNotes(s: NotesState): void {
+/** Returns whether the write succeeded; on failure the notes stay in memory only. */
+export function saveNotes(s: NotesState): boolean {
   try {
     localStorage.setItem(KEY, JSON.stringify(s));
+    return true;
   } catch {
-    /* storage unavailable: notes stay in memory only */
+    return false;
   }
 }
 
@@ -50,8 +52,8 @@ export function loadNotes(): NotesState {
     if (parsed?.notes?.length && parsed.notes.every((n) => typeof n.id === "string" && typeof n.text === "string")) return { ...parsed, active: activeNote(parsed).id };
     const note = newNote(localStorage.getItem(LEGACY_DRAFT_KEY) ?? "");
     const state = { active: note.id, notes: [note] };
-    saveNotes(state);
-    localStorage.removeItem(LEGACY_DRAFT_KEY);
+    // Only drop the old draft once the new copy is stored; a failed write must not destroy the only copy.
+    if (saveNotes(state)) localStorage.removeItem(LEGACY_DRAFT_KEY);
     return state;
   } catch {
     const note = newNote();

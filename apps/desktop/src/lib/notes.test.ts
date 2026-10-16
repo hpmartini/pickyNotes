@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { activeNote, addNote, closeNote, loadNotes, noteTitle, saveNotes, setNoteText } from "./notes";
 
 afterEach(() => localStorage.clear());
@@ -10,6 +10,26 @@ describe("notes", () => {
     expect(s.notes.map((n) => n.text)).toEqual(["- Entwurf"]);
     expect(localStorage.getItem("picky.draft")).toBeNull();
     expect(loadNotes()).toEqual(s); // second load reads picky.notes
+  });
+
+  it("keeps the legacy draft when the new copy cannot be stored (quota)", () => {
+    localStorage.setItem("picky.draft", "- Entwurf");
+    const set = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("full", "QuotaExceededError");
+    });
+    expect(loadNotes().notes.map((n) => n.text)).toEqual(["- Entwurf"]);
+    set.mockRestore();
+    expect(localStorage.getItem("picky.draft")).toBe("- Entwurf");
+    expect(localStorage.getItem("picky.notes")).toBeNull();
+  });
+
+  it("saveNotes reports whether the write succeeded", () => {
+    expect(saveNotes(loadNotes())).toBe(true);
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+      throw new DOMException("full", "QuotaExceededError");
+    });
+    expect(saveNotes(loadNotes())).toBe(false);
+    vi.restoreAllMocks();
   });
 
   it("starts with one empty note and ignores a legacy draft once notes exist", () => {

@@ -23,7 +23,7 @@ export function App() {
   const queue = useMemo(() => new CaptureQueue(), []);
   const send = async (i: Parameters<PickyClient["capture"]>[0]) => (await client()).capture(i);
 
-  useEffect(() => saveNotes(notes), [notes]);
+  useEffect(() => void saveNotes(notes), [notes]);
 
   useEffect(() => {
     void applyHotkeys(null, loadHotkeys()).then(({ errors }) => Object.keys(errors).length && console.warn("Hotkeys nicht registriert:", errors));
@@ -33,6 +33,7 @@ export function App() {
     // Capture phase: CodeMirror's mac keymap binds Ctrl-n and would swallow it while the editor has focus.
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
+      if ((e.target as Element | null)?.closest?.("[data-shortcut-capture]")) return; // recording a hotkey, not using one
       if (e.key === ",") (e.preventDefault(), setSettingsOpen(true));
       else if (e.key.toLowerCase() === "n") (e.preventDefault(), setNotes(addNote));
     };

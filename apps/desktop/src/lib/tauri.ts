@@ -59,36 +59,38 @@ const handlers = {
 
 /**
  * Registers the global hotkeys live. `prev` is what is registered now (null at startup), `next` what should be.
- * A changed key is unregistered and its replacement registered; if the replacement is rejected the old key is restored.
+ * All changed old keys are unregistered first (so a swap of two keys works), then the new ones registered.
+ * If a new key is rejected, the new keys already registered are dropped and the old ones restored.
  * Never throws: returns the keys that apply afterwards plus a message per rejected hotkey.
  */
 export async function applyHotkeys(prev: Hotkeys | null, next: Hotkeys): Promise<{ applied: Hotkeys; errors: HotkeyErrors }> {
-  const applied = { ...next };
+  const names = (["toggle", "dictation"] as const).filter((n) => prev?.[n] !== next[n]);
   const errors: HotkeyErrors = {};
-  if (!inTauri()) return { applied, errors };
+  const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
+  if (!inTauri()) return { applied: { ...next }, errors };
   try {
     const { register, unregister } = await import("@tauri-apps/plugin-global-shortcut");
     const reg = (key: string, name: keyof Hotkeys) => register(key, (e) => (e.state === "Pressed" ? handlers[name]() : undefined));
-    for (const name of ["toggle", "dictation"] as const) {
-      const old = prev?.[name];
-      if (old === next[name]) continue;
+    // At startup this drops a leftover registration from before a webview reload, whose handler is dead.
+    for (const n of names) await unregister(prev?.[n] ?? next[n]).catch(() => {});
+    const registered: (keyof Hotkeys)[] = [];
+    for (const n of names) {
       try {
-        // At startup this drops a leftover registration from before a webview reload, whose handler is dead.
-        await unregister(old ?? next[name]).catch(() => {});
-        await reg(next[name], name);
+        await reg(next[n], n);
+        registered.push(n);
       } catch (e) {
-        errors[name] = e instanceof Error ? e.message : String(e);
-        if (old) {
-          applied[name] = old;
-          await reg(old, name).catch(() => {});
-        }
+        errors[n] = message(e);
       }
     }
+    if (!prev || !Object.keys(errors).length) return { applied: { ...next }, errors };
+    for (const n of registered) await unregister(next[n]).catch(() => {});
+    for (const n of names) await reg(prev[n], n).catch(() => {});
+    return { applied: { ...prev }, errors };
   } catch (e) {
     // plugin missing: every hotkey that was asked to change failed
-    for (const name of ["toggle", "dictation"] as const) if (prev?.[name] !== next[name]) errors[name] = e instanceof Error ? e.message : String(e);
+    for (const n of names) errors[n] = message(e);
+    return { applied: { ...(prev ?? next) }, errors };
   }
-  return { applied, errors };
 }
 
 /** macOS Dock icon (activation policy) and menu-bar icon; Rust applies and persists them. No-ops in the browser. */

@@ -183,11 +183,11 @@ fn toggle_main(app: &AppHandle) {
 }
 
 fn apply_tray(app: &AppHandle, visible: bool) -> tauri::Result<()> {
-    if !visible {
-        app.remove_tray_by_id(TRAY_ID);
-        return Ok(());
+    // One tray for the whole run, only shown/hidden: building it again would register the menu handlers again.
+    if let Some(tray) = app.tray_by_id(TRAY_ID) {
+        return tray.set_visible(visible);
     }
-    if app.tray_by_id(TRAY_ID).is_some() {
+    if !visible {
         return Ok(());
     }
     let menu = Menu::with_items(

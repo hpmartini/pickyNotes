@@ -4,12 +4,28 @@ import { applyHotkeys, setDockVisible, setTrayVisible, token, type HotkeyErrors 
 
 export const URL_KEY = "picky.url";
 
+/** Keeps Tab inside the dialog: wraps from the last control to the first and back. */
+function trapTab(e: React.KeyboardEvent<HTMLDivElement>) {
+  if (e.key !== "Tab") return;
+  const items = [...e.currentTarget.querySelectorAll<HTMLElement>("button, input, [tabindex]")].filter((el) => !(el as HTMLButtonElement).disabled && el.tabIndex >= 0);
+  const edge = items[e.shiftKey ? 0 : items.length - 1];
+  if (document.activeElement === edge || document.activeElement === e.currentTarget) {
+    e.preventDefault();
+    items[e.shiftKey ? items.length - 1 : 0]?.focus();
+  }
+}
+
 const HOTKEY_LABELS: Record<keyof Hotkeys, string> = { dictation: "Diktat starten/stoppen", toggle: "App ein-/ausblenden" };
 
 /** Modal dialog opened with Cmd/Ctrl+, : server connection, global hotkeys, Dock and menu-bar icon. */
 export function SettingsModal({ onClose }: { onClose: () => void }) {
   const dialog = useRef<HTMLDivElement>(null);
-  useEffect(() => dialog.current?.focus(), []); // once: onClose changes identity on every App render and must not steal focus again
+  // once: onClose changes identity on every App render and must not steal focus again
+  useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
+    dialog.current?.focus();
+    return () => opener?.focus();
+  }, []);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
     window.addEventListener("keydown", onKey);
@@ -18,7 +34,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
 
   return (
     <div className="backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div ref={dialog} role="dialog" aria-modal="true" aria-labelledby="settings-title" tabIndex={-1} className="dialog">
+      <div ref={dialog} role="dialog" aria-modal="true" aria-labelledby="settings-title" tabIndex={-1} className="dialog" onKeyDown={trapTab}>
         <header>
           <h2 id="settings-title">Einstellungen</h2>
           <button onClick={onClose} aria-label="Einstellungen schließen">×</button>
@@ -57,13 +73,16 @@ function ServerForm() {
 function HotkeySettings() {
   const [keys, setKeys] = useState(loadHotkeys);
   const [errors, setErrors] = useState<HotkeyErrors>({});
+  const [pending, setPending] = useState(false);
 
   /** Applies live; a rejected key stays out (the previous one keeps working) and shows its error. */
   async function change(next: Hotkeys) {
+    setPending(true); // a second change while this one is in flight would race on the registrations
     const { applied, errors } = await applyHotkeys(keys, next);
     setErrors(errors);
     setKeys(applied);
     saveHotkeys(applied);
+    setPending(false);
   }
 
   function capture(name: keyof Hotkeys, e: React.KeyboardEvent) {
@@ -73,7 +92,8 @@ function HotkeySettings() {
     if (!acc || acc === keys[name]) return;
     const other = name === "toggle" ? "dictation" : "toggle";
     if (acc === keys[other]) return setErrors({ [name]: `Schon belegt: ${HOTKEY_LABELS[other]}` });
-    void change({ ...keys, [name]: acc });
+    const field = e.currentTarget as HTMLElement;
+    void change({ ...keys, [name]: acc }).then(() => field.focus()); // disabling while pending dropped the focus
   }
 
   return (
@@ -83,12 +103,12 @@ function HotkeySettings() {
         <div key={name}>
           <label>
             {HOTKEY_LABELS[name]}
-            <input readOnly value={keys[name]} onKeyDown={(e) => capture(name, e)} placeholder="Kombination drücken" aria-invalid={!!errors[name]} />
+            <input readOnly data-shortcut-capture disabled={pending} value={keys[name]} onKeyDown={(e) => capture(name, e)} placeholder="Kombination drücken" aria-invalid={!!errors[name]} />
           </label>
           {errors[name] && <p role="alert">{errors[name]}</p>}
         </div>
       ))}
-      <button type="button" onClick={() => void change(DEFAULT_HOTKEYS)}>Zurücksetzen</button>
+      <button type="button" disabled={pending} onClick={() => void change(DEFAULT_HOTKEYS)}>Zurücksetzen</button>
     </fieldset>
   );
 }

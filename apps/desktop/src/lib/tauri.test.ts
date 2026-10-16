@@ -6,7 +6,7 @@ const sc = vi.hoisted(() => ({ handlers: new Map<string, Handler>(), failFor: ne
 const win = vi.hoisted(() => ({ show: vi.fn(), unminimize: vi.fn(), setFocus: vi.fn(), hide: vi.fn(), visible: true, focused: true }));
 vi.mock("@tauri-apps/plugin-global-shortcut", () => ({
   register: async (key: string, h: Handler) => {
-    if (sc.failFor.has(key)) throw new Error("already taken");
+    if (sc.failFor.has(key) || sc.handlers.has(key)) throw new Error("already taken");
     sc.handlers.set(key, h);
   },
   unregister: async (key: string) => {
@@ -95,5 +95,22 @@ describe("applyHotkeys", () => {
     const r = await applyHotkeys(null, DEFAULT_HOTKEYS);
     expect(r.errors).toEqual({ toggle: "already taken" });
     expect([...sc.handlers.keys()]).toEqual([CTRL_ALT]);
+  });
+
+  it("swapping the two keys (reset after a manual swap) unregisters both before registering either", async () => {
+    const swapped = { dictation: CMD_SHIFT, toggle: CTRL_ALT };
+    expect(await applyHotkeys(DEFAULT_HOTKEYS, swapped)).toEqual({ applied: swapped, errors: {} });
+    expect(sc.unregistered.slice(-2).sort()).toEqual([CMD_SHIFT, CTRL_ALT].sort());
+    await sc.handlers.get(CMD_SHIFT)!({ state: "Pressed" });
+    expect(events.map((e) => e.detail)).toEqual([{ toggle: true }]); // CMD_SHIFT is now the dictation key
+    expect(await applyHotkeys(swapped, DEFAULT_HOTKEYS)).toEqual({ applied: DEFAULT_HOTKEYS, errors: {} });
+  });
+
+  it("when one of two changes is rejected, the one that registered is dropped and both old keys come back", async () => {
+    sc.failFor.add("Control+Alt+K");
+    const next = { dictation: "Control+Alt+K", toggle: "CommandOrControl+Alt+J" };
+    const r = await applyHotkeys(DEFAULT_HOTKEYS, next);
+    expect(r).toEqual({ applied: DEFAULT_HOTKEYS, errors: { dictation: "already taken" } });
+    expect([...sc.handlers.keys()].sort()).toEqual([CMD_SHIFT, CTRL_ALT].sort());
   });
 });
