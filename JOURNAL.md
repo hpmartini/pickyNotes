@@ -379,3 +379,9 @@ Mehrere Review-Funde waren veraltet (Rust-Command, CaptureView-Verdrahtung, Serv
 - **Blocker:** „Als Notiz öffnen“ löschte beide Kopien, obwohl `saveNotes()` (localStorage) fehlschlagen konnte (Quota) – Neustart = Notiz weg. Fix: `onOpenAsNote` liefert `boolean`; `App.openAsNote` schreibt zuerst `saveNotes(next)`, bei Fehler bleibt State und Queue/Postausgang unberührt, Status „Notiz nicht gespeichert – bleibt im Postausgang“. Test: `CaptureView.test.tsx` (rot vor dem Fix).
 - **Major:** Ohne Outbox zählte `Promise.allSettled` das `undefined` als erfolgreichen Schreibvorgang; bei IndexedDB-Fehler löste `enqueue` mit `key: undefined` auf statt zu werfen. Fix: fehlender Outbox = abgelehnt; wirft, wenn kein vorhandener Speicher schrieb. Test: `queue.test.ts` (rot vor dem Fix).
 - Gates: tsc 0, Unit 192 grün, e2e 77 grün. `cargo test` unverändert (kein Rust-Diff).
+
+### Follow-up Review-Befunde R3/R4 (2026-10-19)
+
+- **R3:** Schrieb nur der Postausgang (IndexedDB tot, `key` undefined), liefen danach `flush()`/`list()` gegen die tote DB und warfen unbehandelt; kein Status. Fix: `submit` meldet „Nur im Postausgang gesichert … Notiz bleibt im Editor offen“ direkt nach `enqueue` und gibt false zurück. Test: `CaptureView.test.tsx` (rot vor dem Fix).
+- **R4:** Warf `configured()` (Keychain-Lesefehler), brach `submit` vor `enqueue` ab: Notiz nicht gespeichert, Fehler unbehandelt. Fix: `readiness()` fängt das ab (= nicht bereit); die Notiz geht in Queue und Postausgang, Status „Zugangsdaten nicht lesbar (<Meldung>) – Notiz liegt im Postausgang“. Gilt auch für „Erneut senden“. Test: `CaptureView.test.tsx` (rot vor dem Fix).
+- Gates: gezielt `CaptureView.test.tsx` + `queue.test.ts` (52 grün), desktop `tsc` grün. Volle Gates (root `npm test`, e2e, `cargo test`) nicht erneut gelaufen.

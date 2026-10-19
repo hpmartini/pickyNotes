@@ -277,6 +277,36 @@ describe("CaptureView", () => {
       expect((screen.getByLabelText("Editor") as HTMLTextAreaElement).value).toBe("verloren?");
     });
 
+    it("outbox written but IndexedDB dead: says so before touching the database, and the note stays in the editor", async () => {
+      const { files, outbox } = fakeOutbox();
+      const queue = new CaptureQueue(`c${n++}`, outbox);
+      vi.spyOn(queue, "enqueue").mockImplementation(async (input) => {
+        const clientId = "c-outbox-only";
+        files.set(clientId, { input: { ...input, clientId }, queuedAt: 0 } as QueuedCapture);
+        return { key: undefined, clientId, stored: false };
+      });
+      const flush = vi.spyOn(queue, "flush").mockRejectedValue(new Error("idb gone"));
+      render(<Capture queue={queue} send={vi.fn()} />);
+      save("nur im Ordner");
+      await waitFor(() => expect(screen.getByRole("status").textContent).toContain("Nur im Postausgang"));
+      expect((screen.getByLabelText("Editor") as HTMLTextAreaElement).value).toBe("nur im Ordner");
+      expect(flush).not.toHaveBeenCalled();
+      expect(files.size).toBe(1);
+    });
+
+    it("keychain read fails: the note is still queued and in the outbox, and the credential error is shown", async () => {
+      const { files, outbox } = fakeOutbox();
+      const queue = new CaptureQueue(`c${n++}`, outbox);
+      const send = vi.fn();
+      render(<Capture queue={queue} send={send} configured={async () => { throw new Error("keychain locked"); }} />);
+      save("trotz Keychain");
+      await waitFor(() => expect(screen.getByRole("status").textContent).toMatch(/keychain locked.*Postausgang/));
+      expect(await queue.pending()).toBe(1);
+      expect(files.size).toBe(1);
+      expect(pendingList().getByText(/trotz Keychain/)).toBeTruthy();
+      expect(send).not.toHaveBeenCalled();
+    });
+
     it("a delivered note closes the tab even if the outbox write failed", async () => {
       const queue = new CaptureQueue(`c${n++}`, fakeOutbox(true).outbox);
       render(<Capture queue={queue} send={vi.fn(async () => ({ id: "1" }))} />);

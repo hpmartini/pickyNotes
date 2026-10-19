@@ -55,10 +55,19 @@ export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled, 
     return queue.subscribe(refresh);
   }, [queue]);
 
+  /** A failing credential read (keychain) counts as not ready and keeps its message; it must not stop the capture from being stored. */
+  async function readiness(): Promise<{ ready: boolean; error?: string }> {
+    try {
+      return { ready: !configured || (await configured()) };
+    } catch (e) {
+      return { ready: false, error: e instanceof Error ? e.message : String(e) };
+    }
+  }
+
   /** Flushes unless the server is not configured (`ready` false); then says why the capture is still waiting. */
-  async function deliver(ready: boolean) {
+  async function deliver(ready: boolean, error?: string) {
     if (ready) await queue.flush(send);
-    else setStatus(MISSING_CONFIG);
+    else setStatus(error ? `Zugangsdaten nicht lesbar (${error}) – Notiz liegt im Postausgang` : MISSING_CONFIG);
   }
 
   /**
@@ -69,14 +78,14 @@ export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled, 
     const mine = (await queue.list()).find((i) => i.key === r.key && r.key !== undefined);
     if (mine?.rejected) return setStatus(`Abgelehnt: ${mine.rejected}`), false;
     if (!mine && r.key !== undefined) return setStatus("Gesendet"), true;
-    if (!r.stored) return setStatus(r.key === undefined ? "Nur im Postausgang gesichert, Warteschlange nicht erreichbar – Notiz bleibt im Editor offen" : "Postausgang nicht beschreibbar – Notiz bleibt im Editor offen"), false;
+    if (!r.stored) return setStatus("Postausgang nicht beschreibbar – Notiz bleibt im Editor offen"), false;
     if (attempted) setStatus(`Offline gepuffert (${(await queue.pending())} in Warteschlange)`);
     return true;
   }
 
   /** Store first (never lose a thought), then try to deliver. */
   async function submit(input: CaptureInput): Promise<boolean> {
-    const ready = !configured || (await configured()); // checked before anything is stored or sent
+    const { ready, error } = await readiness(); // checked before anything is stored or sent
     let r: Enqueued;
     try {
       r = await queue.enqueue(input);
@@ -84,14 +93,16 @@ export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled, 
       setStatus(`Notiz nicht gespeichert – bleibt im Editor offen (${e instanceof Error ? e.message : e})`);
       return false;
     }
-    await deliver(ready);
+    // Only the outbox file has it: flush()/list() would hit the dead database, so say it here and keep the draft.
+    if (r.key === undefined) return setStatus("Nur im Postausgang gesichert, Warteschlange nicht erreichbar – Notiz bleibt im Editor offen"), false;
+    await deliver(ready, error);
     return settle(r, ready);
   }
 
   async function retry(key: number) {
-    const ready = !configured || (await configured());
+    const { ready, error } = await readiness();
     await queue.retry(key);
-    await deliver(ready);
+    await deliver(ready, error);
     await settle({ key, stored: true }, ready);
   }
 
