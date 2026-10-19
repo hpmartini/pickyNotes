@@ -3,9 +3,9 @@ import "@atomic-editor/editor/styles.css";
 import type { CaptureInput } from "@pickynotes/shared";
 import { EditorView } from "@codemirror/view";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { CaptureQueue, QueuedCapture, Send } from "./lib/queue";
+import type { CaptureQueue, Enqueued, QueuedCapture, Send } from "./lib/queue";
 import { inTauri, whisperstorm } from "./lib/tauri";
-import { readAttachmentsForSend, dropAttachments } from "./lib/attachments";
+import { readAttachmentsForSend, dropAttachments, restoreAttachments } from "./lib/attachments";
 import type { Note } from "./lib/notes";
 import { dispatchInsertTable, editorExtensions, insertAttachmentAt, insertTextAtCursor } from "./lib/editor";
 
@@ -26,52 +26,83 @@ interface Props {
   onSent: (id: string) => void;
   /** A modal is open: the editor takes no focus or input. */
   inert?: boolean;
+  /** False while the server URL or token is missing: saving then only queues. Default: configured. */
+  configured?: () => Promise<boolean>;
+  /** "Als Notiz öffnen": the text of a pending capture goes into a new note tab. */
+  onOpenAsNote?: (text: string) => void;
+  /** Shows the outbox folder in the file manager (Tauri only). */
+  onRevealOutbox?: () => void;
 }
 
-export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled, notes, activeId, onChange, onSent, inert }: Props) {
+const MISSING_CONFIG = "Server-URL/Token fehlen – Notiz liegt im Postausgang";
+
+export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled, notes, activeId, onChange, onSent, inert, configured, onOpenAsNote, onRevealOutbox }: Props) {
   const text = notes.find((n) => n.id === activeId)?.text ?? "";
   const notesRef = useRef(notes);
   notesRef.current = notes;
   const [status, setStatus] = useState("");
   const [recording, setRecording] = useState(false);
   const [starting, setStarting] = useState(false); // start can wait on the microphone prompt for up to 30 s
-  const [rejected, setRejected] = useState<QueuedCapture[]>([]);
+  const [items, setItems] = useState<QueuedCapture[]>([]);
+  const rejected = items.filter((i) => i.rejected);
+  const pending = items.filter((i) => !i.rejected);
   const editorRef = useRef<AtomicCodeMirrorEditorHandle | null>(null);
 
-  /** Reports the queue state; false if the item with `key` was rejected by the server. */
-  async function settle(key: number): Promise<boolean> {
-    const items = await queue.list();
-    setRejected(items.filter((i) => i.rejected));
-    const mine = items.find((i) => i.key === key);
-    if (mine?.rejected) {
-      setStatus(`Abgelehnt: ${mine.rejected}`);
-      return false;
-    }
-    const left = items.filter((i) => !i.rejected).length;
-    setStatus(left ? `Offline gepuffert (${left} in Warteschlange)` : "Gesendet");
+  useEffect(() => {
+    const refresh = () => void queue.list().then(setItems, () => {});
+    refresh();
+    return queue.subscribe(refresh);
+  }, [queue]);
+
+  /** Flushes unless the server is not configured (`ready` false); then says why the capture is still waiting. */
+  async function deliver(ready: boolean) {
+    if (ready) await queue.flush(send);
+    else setStatus(MISSING_CONFIG);
+  }
+
+  /**
+   * Reports the queue state; true if the draft may be closed: the capture was delivered, or it sits in every store
+   * (`stored`) and shows up in the pending list. False if the server rejected it or a store failed.
+   */
+  async function settle(r: Pick<Enqueued, "key" | "stored">, attempted = true): Promise<boolean> {
+    const mine = (await queue.list()).find((i) => i.key === r.key && r.key !== undefined);
+    if (mine?.rejected) return setStatus(`Abgelehnt: ${mine.rejected}`), false;
+    if (!mine && r.key !== undefined) return setStatus("Gesendet"), true;
+    if (!r.stored) return setStatus(r.key === undefined ? "Nur im Postausgang gesichert, Warteschlange nicht erreichbar – Notiz bleibt im Editor offen" : "Postausgang nicht beschreibbar – Notiz bleibt im Editor offen"), false;
+    if (attempted) setStatus(`Offline gepuffert (${(await queue.pending())} in Warteschlange)`);
     return true;
   }
 
-  useEffect(() => {
-    void queue.list().then((items) => setRejected(items.filter((i) => i.rejected)));
-  }, [queue]);
-
   /** Store first (never lose a thought), then try to deliver. */
   async function submit(input: CaptureInput): Promise<boolean> {
-    const key = await queue.enqueue(input);
-    await queue.flush(send);
-    return settle(key);
+    const ready = !configured || (await configured()); // checked before anything is stored or sent
+    let r: Enqueued;
+    try {
+      r = await queue.enqueue(input);
+    } catch (e) {
+      setStatus(`Notiz nicht gespeichert – bleibt im Editor offen (${e instanceof Error ? e.message : e})`);
+      return false;
+    }
+    await deliver(ready);
+    return settle(r, ready);
   }
 
   async function retry(key: number) {
+    const ready = !configured || (await configured());
     await queue.retry(key);
-    await queue.flush(send);
-    await settle(key);
+    await deliver(ready);
+    await settle({ key, stored: true }, ready);
   }
 
   async function discard(key: number) {
     await queue.discard(key);
-    setRejected((r) => r.filter((i) => i.key !== key));
+  }
+
+  /** The text goes into a new tab first; only then does the capture leave the queue and the outbox. */
+  async function openAsNote(item: QueuedCapture) {
+    await restoreAttachments(item.input.attachments);
+    onOpenAsNote?.(item.input.text ?? "");
+    await queue.discard(item.key!);
   }
 
   /** Resolve the live CM6 view from the editor's content DOM. */
@@ -195,6 +226,21 @@ export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled, 
         <button onClick={insertTable}>Tabelle</button>
         <p className="status" role="status" aria-live="polite">{status}</p>
       </div>
+      {pending.length > 0 && (
+        <section className="rejected" aria-label="Ausstehend">
+          <h2>Ausstehend ({pending.length})</h2>
+          <ul>
+            {pending.map((i) => (
+              <li key={i.key}>
+                {(i.input.text ?? i.input.filename ?? i.input.kind).slice(0, 60)}{" "}
+                {onOpenAsNote && i.input.text !== undefined && <button onClick={() => void openAsNote(i)}>Als Notiz öffnen</button>}{" "}
+                <button onClick={() => void retry(i.key!)}>Erneut senden</button>
+              </li>
+            ))}
+          </ul>
+          {onRevealOutbox && <button onClick={onRevealOutbox}>Ordner zeigen</button>}
+        </section>
+      )}
       {rejected.length > 0 && (
         <section className="rejected" aria-label="Abgelehnte Captures">
           <h2>Abgelehnt</h2>

@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { Hotkeys } from "./settings";
+import type { Outbox } from "./queue";
+import type { HotkeyConfig, Hotkeys } from "./settings";
 
 export const inTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -11,6 +12,30 @@ export const token = {
 
 /** Interactive `screencapture` (Rust command). Returns base64 PNG, or null if the user cancelled. */
 export const screenshot = (): Promise<string | null> => invoke<string | null>("screenshot");
+
+/**
+ * File outbox in the app data dir (Rust commands): a second, plain-file copy of every queued capture. Undefined in the browser dev server.
+ * Files that do not parse are skipped, not deleted.
+ */
+export const tauriOutbox = (): Outbox | undefined =>
+  inTauri()
+    ? {
+        write: (item) => invoke("outbox_write", { clientId: item.input.clientId, json: JSON.stringify(item) }),
+        remove: (clientId) => invoke("outbox_delete", { clientId }),
+        list: async () =>
+          (await invoke<string[]>("outbox_list")).flatMap((raw) => {
+            try {
+              const item = JSON.parse(raw);
+              return typeof item?.input?.clientId === "string" ? [item] : [];
+            } catch {
+              return [];
+            }
+          }),
+      }
+    : undefined;
+
+/** Shows the outbox folder in Finder. */
+export const revealOutbox = (): Promise<void> => invoke("outbox_reveal");
 
 /** Reply from the WhisperStorm Unix-socket control server. */
 export interface WhisperReply {
@@ -39,12 +64,12 @@ export async function whisperstorm(cmd: "start" | "stop" | "status"): Promise<Wh
 /** One message per hotkey that could not be registered (taken by another app, or an invalid combination). */
 export type HotkeyErrors = Partial<Record<keyof Hotkeys, string>>;
 
+/** Rust shows, unminimizes and focuses the window and re-applies the fullscreen-overlay settings (the JS window API cannot). */
+const showWindow = () => invoke("show_main_window");
+
 /** The window comes to the front and the capture view hears about it (detail.toggle = dictation toggle). */
 async function showAndFocus(toggle: boolean) {
-  const w = (await import("@tauri-apps/api/window")).getCurrentWindow();
-  await w.show();
-  await w.unminimize();
-  await w.setFocus();
+  await showWindow();
   window.dispatchEvent(new CustomEvent("picky:focus-capture", { detail: { toggle } }));
 }
 
@@ -55,10 +80,16 @@ const handlers = {
     if ((await w.isVisible()) && (await w.isFocused())) await w.hide();
     else await showAndFocus(false);
   },
+  /** A separate event: picky:focus-capture would close the search panel again. */
+  async search() {
+    await showWindow();
+    window.dispatchEvent(new CustomEvent("picky:open-search"));
+  },
 };
 
 /**
  * Registers the global hotkeys live. `prev` is what is registered now (null at startup), `next` what should be.
+ * A hotkey is registered only while it is enabled; disabling one just unregisters it.
  * All changed old keys are unregistered first (so a swap of two keys works), then the new ones registered.
  * If a new key is rejected, the new keys already registered are dropped and the old ones restored.
  * Never throws: returns the keys that apply afterwards plus a message per rejected hotkey.
@@ -78,26 +109,31 @@ let hotkeyQueue: Promise<void> = Promise.resolve();
 let registeredHotkeys: Hotkeys | null = null;
 
 async function applyNow(prev: Hotkeys | null, next: Hotkeys): Promise<{ applied: Hotkeys; errors: HotkeyErrors }> {
-  const names = (["toggle", "dictation"] as const).filter((n) => prev?.[n] !== next[n]);
+  const names = (["toggle", "dictation", "search"] as const).filter((n) => prev?.[n].key !== next[n].key || prev?.[n].enabled !== next[n].enabled);
   const errors: HotkeyErrors = {};
   const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
   if (!inTauri()) return { applied: { ...next }, errors };
   try {
     const { register, unregister } = await import("@tauri-apps/plugin-global-shortcut");
-    const reg = (key: string, name: keyof Hotkeys) => register(key, (e) => (e.state === "Pressed" ? handlers[name]() : undefined));
+    const reg = async ({ key, enabled }: HotkeyConfig, name: keyof Hotkeys) => {
+      if (enabled) await register(key, (e) => (e.state === "Pressed" ? handlers[name]() : undefined));
+    };
     // At startup this drops a leftover registration from before a webview reload, whose handler is dead.
-    for (const n of names) await unregister(prev?.[n] ?? next[n]).catch(() => {});
+    for (const n of names) {
+      const old = prev?.[n] ?? next[n];
+      if (old.enabled) await unregister(old.key).catch(() => {});
+    }
     const registered: (keyof Hotkeys)[] = [];
     for (const n of names) {
       try {
         await reg(next[n], n);
-        registered.push(n);
+        if (next[n].enabled) registered.push(n);
       } catch (e) {
         errors[n] = message(e);
       }
     }
     if (!prev || !Object.keys(errors).length) return { applied: { ...next }, errors };
-    for (const n of registered) await unregister(next[n]).catch(() => {});
+    for (const n of registered) await unregister(next[n].key).catch(() => {});
     for (const n of names) await reg(prev[n], n).catch(() => {});
     return { applied: { ...prev }, errors };
   } catch (e) {

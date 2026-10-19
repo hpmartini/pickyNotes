@@ -549,3 +549,87 @@ describe("Table toolbar acts on the cursor's row and column", () => {
     expect(click("Aktuelle Spalte entfernen", 3, 1)).toBe("| a | c |\n| :--- | ---: |\n| 1 | 3 |\n| 4 | 6 |\n| 7 | 9 |");
   });
 });
+
+describe("List markers render only once a space follows", () => {
+  const q = (v: EditorView, sel: string) => v.contentDOM.querySelectorAll(sel).length;
+  const bullets = (v: EditorView) => q(v, ".cm-atomic-bullet");
+  const plain = (v: EditorView) => q(v, ".cm-pn-bare-marker") > 0 && bullets(v) === 0;
+
+  it.each(["-", "*", "+", "1.", "2)"])("%j alone stays plain text on the caret line", (typed) => {
+    const view = mount();
+    type(view, typed);
+    expect(doc(view)).toBe(typed);
+    expect(plain(view)).toBe(true);
+    expect(view.contentDOM.textContent).toBe(typed);
+  });
+
+  it.each([["- "], ["* "], ["+ "]])("%j is a bullet whose gap is rendered at once", (typed) => {
+    const view = mount();
+    type(view, typed);
+    expect(doc(view)).toBe(typed);
+    expect(bullets(view)).toBe(1);
+    expect(q(view, ".cm-pn-gap")).toBe(1); // the gap sits inside the widget, so the caret starts after it
+    expect(q(view, ".cm-pn-bare-marker")).toBe(0);
+  });
+
+  it("1. is plain, 1.  becomes an ordered list item", () => {
+    const view = mount();
+    type(view, "1.");
+    expect(plain(view)).toBe(true);
+    type(view, " ");
+    expect(doc(view)).toBe("1. ");
+    expect(q(view, ".cm-pn-bare-marker")).toBe(0);
+    expect(q(view, ".cm-atomic-list-marker")).toBe(1);
+  });
+
+  it.each([["- a"], ["* a"], ["+ a"]])("%j is Atomic's normal bullet (no extra gap)", (typed) => {
+    const view = mount();
+    type(view, typed);
+    expect(bullets(view)).toBe(1);
+    expect(q(view, ".cm-pn-gap") + q(view, ".cm-pn-bare-marker")).toBe(0);
+  });
+
+  it("1. a is a normal ordered item", () => {
+    const view = mount();
+    type(view, "1. a");
+    expect(q(view, ".cm-atomic-list-marker")).toBe(1);
+    expect(q(view, ".cm-pn-bare-marker")).toBe(0);
+  });
+
+  it("a marker typed after a blank line follows the same rule", () => {
+    const view = mount("Absatz\n\n");
+    type(view, "-");
+    expect(plain(view)).toBe(true);
+    type(view, " ");
+    expect(bullets(view)).toBe(1);
+  });
+
+  it("saved lists keep their bullets and numbers", () => {
+    const view = mount("- a\n- b\n\n* c\n\n+ d\n\n1. x\n2. y");
+    expect(bullets(view)).toBe(4);
+    expect(q(view, ".cm-atomic-list-marker")).toBe(6);
+    expect(q(view, ".cm-pn-bare-marker") + q(view, ".cm-pn-gap")).toBe(0);
+  });
+
+  it("only the caret line is affected: a bare marker elsewhere keeps rendering as before", () => {
+    const view = mount("-\n\nx");
+    expect(bullets(view)).toBe(1);
+    view.dispatch({ selection: { anchor: 0 } });
+    expect(plain(view)).toBe(true);
+    view.dispatch({ selection: { anchor: 4 } });
+    expect(bullets(view)).toBe(1);
+  });
+
+  it("deleting the space again makes the bullet plain text", () => {
+    const view = mount();
+    type(view, "- ");
+    view.dispatch({ changes: { from: 1, to: 2 } });
+    expect(doc(view)).toBe("-");
+    expect(plain(view)).toBe(true);
+  });
+
+  it("a marker inside a fenced code block is left alone", () => {
+    const view = mount("```\n-");
+    expect(q(view, ".cm-pn-bare-marker")).toBe(0);
+  });
+});

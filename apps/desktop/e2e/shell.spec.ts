@@ -53,7 +53,7 @@ test.describe("settings modal", () => {
   test("hotkeys: capture a combination, live unregister/register, persisted; reset restores the defaults", async ({ page }) => {
     await mockTauri(page, NO_WS);
     await page.goto("/");
-    await expect.poll(() => registered(page)).toEqual(["CommandOrControl+Shift+Space", "Control+Alt+V"]);
+    await expect.poll(async () => (await registered(page)).sort()).toEqual(["CommandOrControl+Shift+K", "CommandOrControl+Shift+Space", "Control+Alt+V"]);
     await openSettings(page);
     const field = dialog(page).getByLabel("Diktat starten/stoppen");
     await expect(field).toHaveValue("Control+Alt+V");
@@ -62,10 +62,33 @@ test.describe("settings modal", () => {
     await expect(field).toHaveValue("Control+Alt+K");
     expect(await unregistered(page)).toContain("Control+Alt+V");
     expect((await registered(page)).at(-1)).toBe("Control+Alt+K");
-    expect(await page.evaluate(() => JSON.parse(localStorage.getItem("picky.hotkeys")!))).toEqual({ dictation: "Control+Alt+K", toggle: "CommandOrControl+Shift+Space" });
+    expect(await page.evaluate(() => JSON.parse(localStorage.getItem("picky.hotkeys")!))).toEqual({
+      dictation: { key: "Control+Alt+K", enabled: true },
+      toggle: { key: "CommandOrControl+Shift+Space", enabled: true },
+      search: { key: "CommandOrControl+Shift+K", enabled: true },
+    });
     await dialog(page).getByRole("button", { name: "Zurücksetzen" }).click();
     await expect(field).toHaveValue("Control+Alt+V");
     expect((await registered(page)).at(-1)).toBe("Control+Alt+V");
+  });
+
+  test("an aktiv checkbox unregisters a hotkey and registers it again", async ({ page }) => {
+    await mockTauri(page, NO_WS);
+    await page.goto("/");
+    await openSettings(page);
+    const box = dialog(page).locator("[data-hotkey=search]").getByLabel("aktiv");
+    await expect(box).toBeChecked();
+    await box.uncheck();
+    await expect.poll(() => unregistered(page)).toContain("CommandOrControl+Shift+K");
+    await expect(dialog(page).getByLabel("Suche öffnen")).toHaveValue("CommandOrControl+Shift+K");
+    const before = (await registered(page)).length;
+    await page.reload();
+    await expect.poll(async () => (await registered(page)).sort()).toEqual(["CommandOrControl+Shift+Space", "Control+Alt+V"]); // a disabled hotkey is not registered at startup
+    expect(before).toBeGreaterThan(0);
+    await openSettings(page);
+    await expect(dialog(page).locator("[data-hotkey=search]").getByLabel("aktiv")).not.toBeChecked();
+    await dialog(page).locator("[data-hotkey=search]").getByLabel("aktiv").check();
+    await expect.poll(async () => (await registered(page)).at(-1)).toBe("CommandOrControl+Shift+K");
   });
 
   test("while the dialog is open the background is inert and Ctrl+N opens no note", async ({ page }) => {
@@ -151,6 +174,72 @@ test.describe("shell layout", () => {
     await page.goto("/");
     expect((await page.locator(".editor").boundingBox())!.width).toBeGreaterThan(1300);
     await expect(page.locator(".topbar[data-tauri-drag-region]")).toHaveCount(1);
+  });
+});
+
+test.describe("search shortcut", () => {
+  test("Ctrl+K opens the search panel with the input focused, also from the editor", async ({ page }) => {
+    await page.goto("/");
+    await page.locator(".cm-content").click();
+    await page.keyboard.press("Control+k");
+    await expect(page.getByRole("search")).toBeVisible();
+    await expect(page.getByLabel("Suchbegriff")).toBeFocused();
+  });
+
+  test("the global search hotkey event opens the panel", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.getByRole("tab")).toBeVisible();
+    await page.evaluate(() => window.dispatchEvent(new CustomEvent("picky:open-search")));
+    await expect(page.getByLabel("Suchbegriff")).toBeFocused();
+  });
+});
+
+test.describe("text width", () => {
+  test("a custom width narrows and centres the editor column live; Volle Breite restores it", async ({ page }) => {
+    await page.setViewportSize({ width: 1400, height: 800 });
+    await page.goto("/");
+    const content = page.locator(".cm-content");
+    const box = async () => (await content.boundingBox())!;
+    expect((await box()).width).toBeGreaterThan(1300);
+    await openSettings(page);
+    await dialog(page).getByLabel("Eigene Breite").check();
+    await dialog(page).getByLabel("Breite in px").fill("600");
+    await expect.poll(async () => Math.round((await box()).width)).toBe(600);
+    const b = await box();
+    expect(Math.abs(b.x - (1400 - 600 - b.x))).toBeLessThan(2); // equal margins left and right
+    await dialog(page).getByLabel("Volle Breite").check();
+    await expect.poll(async () => (await box()).width).toBeGreaterThan(1300);
+  });
+});
+
+test.describe("pending captures", () => {
+  test("an offline save shows Ausstehend (1); Als Notiz öffnen puts the text back into a new tab", async ({ page }) => {
+    await mockTauri(page, NO_WS);
+    await page.route("**/captures", (route) => route.abort("internetdisconnected"));
+    await page.addInitScript(() => (localStorage.setItem("picky.url", location.origin), localStorage.setItem("picky.dev-token", "t")));
+    await page.goto("/");
+    await page.locator(".cm-content").click();
+    await page.keyboard.type("nicht verlieren");
+    await page.getByRole("button", { name: "Speichern" }).click();
+    await expect(page.getByRole("heading", { name: "Ausstehend (1)" })).toBeVisible();
+    await expect(page.getByRole("status").filter({ hasText: "Offline gepuffert" })).toBeVisible();
+    expect((await tauriCalls(page)).map(([c]) => c)).toContain("outbox_write");
+    await page.getByRole("button", { name: "Als Notiz öffnen" }).click();
+    await expect(page.getByRole("heading", { name: /Ausstehend/ })).toHaveCount(0);
+    await expect.poll(() => activeText(page)).toBe("nicht verlieren");
+    expect((await tauriCalls(page)).map(([c]) => c)).toContain("outbox_delete");
+  });
+
+  test("without server URL and token the note waits in the Postausgang and the status says so", async ({ page }) => {
+    await mockTauri(page, NO_WS);
+    await page.goto("/");
+    await page.locator(".cm-content").click();
+    await page.keyboard.type("ohne Server");
+    await page.getByRole("button", { name: "Speichern" }).click();
+    await expect(page.getByRole("status").filter({ hasText: "Server-URL/Token fehlen – Notiz liegt im Postausgang" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Ausstehend (1)" })).toBeVisible();
+    await page.getByRole("button", { name: "Ordner zeigen" }).click();
+    expect((await tauriCalls(page)).map(([c]) => c)).toContain("outbox_reveal");
   });
 });
 

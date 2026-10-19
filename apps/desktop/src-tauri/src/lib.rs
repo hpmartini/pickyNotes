@@ -104,6 +104,71 @@ fn whisperstorm_at(path: &Path, cmd: &str) -> Result<WhisperReply, String> {
     })
 }
 
+/// Plain-file second copy of every queued capture, so a lost IndexedDB cannot lose a note. One file per clientId, 0600.
+fn outbox_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("outbox"))
+}
+
+/// The clientId becomes a file name: only [A-Za-z0-9_-]{1,64}, so it can never walk out of the outbox folder.
+fn outbox_file(dir: &Path, client_id: &str) -> Result<std::path::PathBuf, String> {
+    let ok = (1..=64).contains(&client_id.len()) && client_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
+    if ok { Ok(dir.join(format!("{client_id}.json"))) } else { Err("invalid clientId".to_string()) }
+}
+
+/// Temp file with mode 0600, then rename: a crash leaves the old file or the new one, never half of it.
+fn outbox_write_at(dir: &Path, client_id: &str, json: &str) -> Result<(), String> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    let target = outbox_file(dir, client_id)?;
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(|e| e.to_string())?;
+    let tmp = dir.join(format!("{client_id}.tmp"));
+    let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&tmp).map_err(|e| e.to_string())?;
+    f.write_all(json.as_bytes()).and_then(|_| f.sync_all()).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, &target).map_err(|e| e.to_string())
+}
+
+/// Contents of every `<id>.json`; a missing folder is an empty outbox.
+fn outbox_list_at(dir: &Path) -> Result<Vec<String>, String> {
+    let Ok(entries) = std::fs::read_dir(dir) else { return Ok(vec![]) };
+    Ok(entries
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+        .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+        .collect())
+}
+
+/// Deleting a file that is already gone is fine.
+fn outbox_delete_at(dir: &Path, client_id: &str) -> Result<(), String> {
+    match std::fs::remove_file(outbox_file(dir, client_id)?) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.to_string()),
+        _ => Ok(()),
+    }
+}
+
+#[tauri::command]
+fn outbox_write(app: AppHandle, client_id: String, json: String) -> Result<(), String> {
+    outbox_write_at(&outbox_dir(&app)?, &client_id, &json)
+}
+
+#[tauri::command]
+fn outbox_list(app: AppHandle) -> Result<Vec<String>, String> {
+    outbox_list_at(&outbox_dir(&app)?)
+}
+
+#[tauri::command]
+fn outbox_delete(app: AppHandle, client_id: String) -> Result<(), String> {
+    outbox_delete_at(&outbox_dir(&app)?, &client_id)
+}
+
+/// Opens the outbox folder in Finder (created first, so the button works on an empty outbox).
+#[tauri::command]
+fn outbox_reveal(app: AppHandle) -> Result<(), String> {
+    let dir = outbox_dir(&app)?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let status = std::process::Command::new("open").arg(&dir).status().map_err(|e| e.to_string())?;
+    if status.success() { Ok(()) } else { Err(format!("open: {status}")) }
+}
+
 /// Dock / menu-bar choices. Rust reads them at launch (the webview is not up yet), so they live in a small JSON file, not localStorage.
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Clone, Copy)]
 #[serde(default)]
@@ -166,6 +231,7 @@ fn menu_action(id: &str) -> Option<MenuAction> {
 
 fn show_main(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
+        prepare_overlay(&w);
         let _ = w.show();
         let _ = w.unminimize();
         let _ = w.set_focus();
@@ -226,6 +292,9 @@ fn apply_tray(app: &AppHandle, visible: bool) -> tauri::Result<()> {
 #[tauri::command]
 fn set_dock_visible(app: AppHandle, visible: bool) -> Result<(), String> {
     apply_dock(&app, visible)?;
+    if let Some(w) = app.get_webview_window("main") {
+        prepare_overlay(&w); // the activation policy change can reset the window's Space behavior
+    }
     save_prefs(&app, ShellPrefs { dock: visible, ..load_prefs(&app) })
 }
 
@@ -235,21 +304,45 @@ fn set_tray_visible(app: AppHandle, visible: bool) -> Result<(), String> {
     save_prefs(&app, ShellPrefs { tray: visible, ..load_prefs(&app) })
 }
 
-/// Show the window on every Space, including over another app's fullscreen Space (main thread only: called from setup).
+/// Collection behavior that lets the window sit on any Space, including another app's fullscreen Space.
+/// CanJoinAllSpaces and MoveToActiveSpace exclude each other, and FullScreenAuxiliary excludes FullScreenPrimary/None, so those are cleared first.
 #[cfg(target_os = "macos")]
-fn float_over_fullscreen(window: &tauri::WebviewWindow) {
-    use objc2_app_kit::{NSWindow, NSWindowCollectionBehavior};
-    if let Ok(ptr) = window.ns_window() {
-        // SAFETY: ns_window() is the live NSWindow of this webview window; setup runs on the main thread.
-        let ns = unsafe { &*(ptr as *const NSWindow) };
-        ns.setCollectionBehavior(ns.collectionBehavior() | NSWindowCollectionBehavior::CanJoinAllSpaces | NSWindowCollectionBehavior::FullScreenAuxiliary);
+fn overlay_behavior(current: objc2_app_kit::NSWindowCollectionBehavior) -> objc2_app_kit::NSWindowCollectionBehavior {
+    use objc2_app_kit::NSWindowCollectionBehavior as B;
+    (current - B::MoveToActiveSpace - B::FullScreenPrimary - B::FullScreenNone) | B::CanJoinAllSpaces | B::FullScreenAuxiliary
+}
+
+/// Makes the window able to appear over fullscreen apps (collection behavior + floating level). Call it every time the window is shown
+/// and after the activation policy changed: macOS drops or ignores these settings across hide/show and Regular/Accessory switches,
+/// so setting them once at launch was not enough. Runs on the main thread, as AppKit requires.
+fn prepare_overlay(window: &tauri::WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    {
+        use objc2_app_kit::{NSFloatingWindowLevel, NSWindow};
+        let w = window.clone();
+        let _ = window.run_on_main_thread(move || {
+            if let Ok(ptr) = w.ns_window() {
+                // SAFETY: ns_window() is the live NSWindow of this webview window and we are on the main thread.
+                let ns = unsafe { &*(ptr as *const NSWindow) };
+                ns.setCollectionBehavior(overlay_behavior(ns.collectionBehavior()));
+                ns.setLevel(NSFloatingWindowLevel);
+            }
+        });
     }
+    #[cfg(not(target_os = "macos"))]
+    let _ = window;
+}
+
+/// Shows, unminimizes and focuses the main window with the overlay settings re-applied (the JS hotkey handlers call this instead of the window API).
+#[tauri::command]
+fn show_main_window(app: AppHandle) {
+    show_main(&app);
 }
 
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![keychain_get, keychain_set, screenshot, whisperstorm, set_dock_visible, set_tray_visible])
+        .invoke_handler(tauri::generate_handler![keychain_get, keychain_set, screenshot, whisperstorm, set_dock_visible, set_tray_visible, show_main_window, outbox_write, outbox_list, outbox_delete, outbox_reveal])
         .on_window_event(|window, event| {
             // Keep running in the background so the global hotkey can bring the window back.
             if let WindowEvent::CloseRequested { api, .. } = event {
@@ -258,14 +351,14 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            #[cfg(target_os = "macos")]
-            if let Some(w) = app.get_webview_window("main") {
-                float_over_fullscreen(&w);
-            }
             let prefs = load_prefs(app.handle());
             // A failed dock/tray apply must not stop the app from starting.
             if let Err(e) = apply_dock(app.handle(), prefs.dock) {
                 eprintln!("dock: {e}");
+            }
+            // After apply_dock: the activation policy comes first, then the window settings.
+            if let Some(w) = app.get_webview_window("main") {
+                prepare_overlay(&w);
             }
             if let Err(e) = apply_tray(app.handle(), prefs.tray) {
                 eprintln!("tray: {e}");
@@ -365,5 +458,56 @@ mod tests {
     fn whisperstorm_at_missing_socket_answers_with_the_user_facing_error() {
         let reply = whisperstorm_at(Path::new("/tmp/picky-ws-no-such-socket-xyz"), "status").unwrap();
         assert_eq!(reply, WhisperReply { ok: false, phase: None, text: None, error: Some("WhisperStorm läuft nicht".into()) });
+    }
+
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("picky-outbox-{}-{name}", std::process::id()))
+    }
+
+    #[test]
+    fn outbox_round_trip_with_mode_0600_and_no_temp_leftovers() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("rt");
+        outbox_write_at(&dir, "abc-123_X", r#"{"input":{}}"#).unwrap();
+        outbox_write_at(&dir, "abc-123_X", r#"{"input":{"v":2}}"#).unwrap(); // overwrite
+        assert_eq!(outbox_list_at(&dir).unwrap(), vec![r#"{"input":{"v":2}}"#.to_string()]);
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&dir.join("abc-123_X.json")), 0o600);
+        assert_eq!(mode(&dir), 0o700);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        outbox_delete_at(&dir, "abc-123_X").unwrap();
+        assert!(outbox_list_at(&dir).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn outbox_rejects_client_ids_that_could_leave_the_folder() {
+        let dir = temp_dir("bad");
+        for bad in ["", "../x", "a/b", "a.b", "a b", "ä", &"a".repeat(65)] {
+            assert!(outbox_write_at(&dir, bad, "{}").is_err(), "{bad:?}");
+            assert!(outbox_delete_at(&dir, bad).is_err(), "{bad:?}");
+        }
+        assert!(!dir.exists());
+        assert!(outbox_write_at(&dir, &"a".repeat(64), "{}").is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn outbox_missing_folder_lists_empty_and_deleting_a_missing_file_is_ok() {
+        let dir = temp_dir("none");
+        assert!(outbox_list_at(&dir).unwrap().is_empty());
+        assert!(outbox_delete_at(&dir, "nope").is_ok());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn overlay_behavior_joins_all_spaces_as_fullscreen_auxiliary_and_keeps_unrelated_bits() {
+        use objc2_app_kit::NSWindowCollectionBehavior as B;
+        let start = B::MoveToActiveSpace | B::FullScreenPrimary | B::FullScreenNone | B::IgnoresCycle;
+        let got = overlay_behavior(start);
+        assert!(got.contains(B::CanJoinAllSpaces | B::FullScreenAuxiliary | B::IgnoresCycle));
+        assert!(!got.intersects(B::MoveToActiveSpace | B::FullScreenPrimary | B::FullScreenNone));
+        assert_eq!(overlay_behavior(got), got, "idempotent: safe to reapply on every show");
+        assert_eq!(overlay_behavior(B::empty()), B::CanJoinAllSpaces | B::FullScreenAuxiliary);
     }
 }

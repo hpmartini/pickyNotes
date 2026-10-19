@@ -22,6 +22,8 @@ export async function mockTauri(page: Page, ws: { start: unknown; stop?: unknown
         calls.push([cmd, args]);
         if (cmd === "whisperstorm") return (wsReplies as Record<string, unknown>)[args.cmd!];
         if (cmd === "screenshot") return png;
+        if (cmd === "outbox_list") return [];
+        if (cmd === "keychain_get") return "t";
         const fail = (window as unknown as { __failRegister?: string }).__failRegister;
         if (cmd === "plugin:global-shortcut|register" && fail && args.shortcuts?.includes(fail)) throw new Error("already taken");
         return null;

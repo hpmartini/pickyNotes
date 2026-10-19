@@ -838,10 +838,66 @@ export function insertTextAtCursor(view: EditorView, text: string): void {
   view.dispatch({ changes: { from: head, insert: blank + text }, selection: { anchor: head + blank.length + text.length }, userEvent: "input.type" });
 }
 
+// Typing feel of list markers. Lezer parses a bare "-" as an empty list item, and Atomic replaces it with a bullet widget at once; Atomic also
+// swallows the space of "- " into a widget whose right margin the caret ignores, so the gap only appeared with the next letter.
+// shortcut: Atomic's inline preview cannot be configured, so on the caret line this plugin re-decorates the exact ranges Atomic replaces (the higher-precedence
+// replace wins) and a line class + CSS undoes its indent; drop once Atomic renders a marker only after its space.
+const typingMarker = /^(\s*)([-*+]|\d{1,9}[.)])( ?)$/;
+
+class MarkerWidget extends WidgetType {
+  constructor(readonly text: string, readonly className: string) {
+    super();
+  }
+  eq(o: MarkerWidget) {
+    return o.text === this.text && o.className === this.className;
+  }
+  toDOM() {
+    const span = document.createElement("span");
+    span.className = this.className;
+    span.textContent = this.text;
+    return span;
+  }
+}
+
+function typingMarkerDecorations(view: EditorView): DecorationSet {
+  const { state } = view;
+  const line = state.doc.lineAt(state.selection.main.head);
+  const m = typingMarker.exec(line.text);
+  if (!m) return Decoration.none;
+  const from = line.from + m[1]!.length;
+  const to = from + m[2]!.length;
+  if (syntaxTree(state).resolveInner(from, 1).name !== "ListMark") return Decoration.none; // fenced code etc.: Atomic decorates nothing there
+  const bullet = /[-*+]/.test(m[2]!);
+  const ranges: Range<Decoration>[] = [];
+  if (!m[3]) {
+    // bare marker: plain text, no list indent
+    ranges.push(Decoration.line({ class: "cm-pn-bare-marker" }).range(line.from));
+    if (bullet) ranges.push(Decoration.replace({ widget: new MarkerWidget(m[2]!, "cm-pn-plain-marker") }).range(from, to));
+  } else if (bullet) {
+    // "- " and nothing yet: the bullet with its gap inside the widget, so the caret sits where the text will start
+    ranges.push(Decoration.replace({ widget: new MarkerWidget("•", "cm-atomic-list-marker cm-atomic-bullet cm-pn-gap") }).range(from, to + 1));
+  }
+  return Decoration.set(ranges, true);
+}
+
+const listMarkerTyping = ViewPlugin.fromClass(
+  class {
+    decorations: DecorationSet;
+    constructor(view: EditorView) {
+      this.decorations = typingMarkerDecorations(view);
+    }
+    update(u: { docChanged: boolean; selectionSet: boolean; view: EditorView }) {
+      if (u.docChanged || u.selectionSet) this.decorations = typingMarkerDecorations(u.view);
+    }
+  },
+  { decorations: (v) => v.decorations },
+);
+
 export const editorExtensions = [
   Prec.high(parser),
   taskTyping,
   Prec.highest(taskListInput),
+  Prec.highest(listMarkerTyping),
   Prec.highest(growFenceWithOpening),
   Prec.highest(plainEmphasisChars),
   Prec.highest(enterLeavesEmptyMarker),

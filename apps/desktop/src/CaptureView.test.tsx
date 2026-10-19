@@ -5,7 +5,7 @@ import { useState, type ComponentProps } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { CaptureView } from "./CaptureView";
-import { CaptureQueue } from "./lib/queue";
+import { CaptureQueue, type Outbox, type QueuedCapture } from "./lib/queue";
 
 // CodeMirror needs real layout; a textarea stands in for the editor in jsdom.
 // Like the real editor, it reads markdownSource only at mount and remounts when `documentId ?? markdownSource` changes.
@@ -221,6 +221,106 @@ describe("CaptureView", () => {
     expect(await bad.list()).toEqual([]);
   });
 
+  describe("Speichern never loses a note", () => {
+    const fakeOutbox = (failWrite = false) => {
+      const files = new Map<string, QueuedCapture>();
+      const outbox: Outbox = {
+        write: async (i) => (failWrite ? Promise.reject(new Error("disk full")) : void files.set(i.input.clientId!, i)),
+        remove: async (id) => void files.delete(id),
+        list: async () => [...files.values()],
+      };
+      return { files, outbox };
+    };
+    const save = (text: string) => {
+      fireEvent.change(screen.getByLabelText("Editor"), { target: { value: text } });
+      fireEvent.click(screen.getByRole("button", { name: "Speichern" }));
+    };
+    const pendingList = () => within(screen.getByRole("region", { name: "Ausstehend" }));
+
+    it("offline: the note leaves the editor but sits visibly in Ausstehend (1), in both stores", async () => {
+      const { files, outbox } = fakeOutbox();
+      const queue = new CaptureQueue(`c${n++}`, outbox);
+      render(<Capture queue={queue} send={vi.fn().mockRejectedValue(new TypeError("offline"))} />);
+      save("mein Gedanke");
+      await waitFor(() => expect(screen.getByRole("status").textContent).toContain("Offline gepuffert"));
+      expect(screen.getByRole("heading", { name: "Ausstehend (1)" })).toBeTruthy();
+      expect(pendingList().getByText(/mein Gedanke/)).toBeTruthy();
+      expect((await queue.list()).map((i) => i.input.text)).toEqual(["mein Gedanke"]);
+      expect([...files.values()].map((i) => i.input.text)).toEqual(["mein Gedanke"]);
+    });
+
+    it("missing server URL/token is detected before sending, said so, and the note waits in the Postausgang", async () => {
+      const queue = new CaptureQueue(`c${n++}`);
+      const send = vi.fn();
+      render(<Capture queue={queue} send={send} configured={async () => false} />);
+      save("ohne Server");
+      await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Server-URL/Token fehlen – Notiz liegt im Postausgang"));
+      expect(send).not.toHaveBeenCalled();
+      expect(pendingList().getByText(/ohne Server/)).toBeTruthy();
+      expect(await queue.pending()).toBe(1);
+    });
+
+    it("keeps the tab open when the outbox copy failed, even though IndexedDB has the note", async () => {
+      const queue = new CaptureQueue(`c${n++}`, fakeOutbox(true).outbox);
+      render(<Capture queue={queue} send={vi.fn().mockRejectedValue(new TypeError("offline"))} />);
+      save("nur eine Kopie");
+      await waitFor(() => expect(screen.getByRole("status").textContent).toContain("Postausgang"));
+      expect((screen.getByLabelText("Editor") as HTMLTextAreaElement).value).toBe("nur eine Kopie");
+    });
+
+    it("keeps the tab open and shows an error when neither store worked", async () => {
+      const queue = new CaptureQueue(`c${n++}`);
+      vi.spyOn(queue, "enqueue").mockRejectedValue(new Error("idb gone"));
+      render(<Capture queue={queue} send={vi.fn()} />);
+      save("verloren?");
+      await waitFor(() => expect(screen.getByRole("status").textContent).toContain("nicht gespeichert"));
+      expect((screen.getByLabelText("Editor") as HTMLTextAreaElement).value).toBe("verloren?");
+    });
+
+    it("a delivered note closes the tab even if the outbox write failed", async () => {
+      const queue = new CaptureQueue(`c${n++}`, fakeOutbox(true).outbox);
+      render(<Capture queue={queue} send={vi.fn(async () => ({ id: "1" }))} />);
+      save("kam an");
+      await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Gesendet"));
+      expect((screen.getByLabelText("Editor") as HTMLTextAreaElement).value).toBe("");
+    });
+
+    it("Als Notiz öffnen restores the text into a new note and removes it from both stores", async () => {
+      const { files, outbox } = fakeOutbox();
+      const queue = new CaptureQueue(`c${n++}`, outbox);
+      await queue.enqueue({ kind: "text", source: "typed", text: "zurück in den Editor" });
+      const onOpenAsNote = vi.fn();
+      render(<Capture queue={queue} send={vi.fn()} onOpenAsNote={onOpenAsNote} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Als Notiz öffnen" }));
+      await waitFor(() => expect(onOpenAsNote).toHaveBeenCalledWith("zurück in den Editor"));
+      await waitFor(() => expect(screen.queryByRole("region", { name: "Ausstehend" })).toBeNull());
+      expect(await queue.list()).toEqual([]);
+      expect(files.size).toBe(0);
+    });
+
+    it("Erneut senden delivers a pending note; Ordner zeigen reveals the outbox folder", async () => {
+      const queue = new CaptureQueue(`c${n++}`);
+      await queue.enqueue({ kind: "text", source: "typed", text: "wartet" });
+      const send = vi.fn(async () => ({ id: "1" }));
+      const reveal = vi.fn();
+      render(<Capture queue={queue} send={send} onRevealOutbox={reveal} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Ordner zeigen" }));
+      expect(reveal).toHaveBeenCalledTimes(1);
+      fireEvent.click(pendingList().getByRole("button", { name: "Erneut senden" }));
+      await waitFor(() => expect(screen.queryByRole("region", { name: "Ausstehend" })).toBeNull());
+      expect(send).toHaveBeenCalledTimes(1);
+    });
+
+    it("the pending list also shows notes that a background flush delivers", async () => {
+      const queue = new CaptureQueue(`c${n++}`);
+      render(<Capture queue={queue} send={vi.fn()} />);
+      await queue.enqueue({ kind: "text", source: "typed", text: "von außen" });
+      expect(await screen.findByRole("heading", { name: "Ausstehend (1)" })).toBeTruthy();
+      await queue.flush(async () => {});
+      await waitFor(() => expect(screen.queryByRole("region", { name: "Ausstehend" })).toBeNull());
+    });
+  });
+
   describe("global hotkey request", () => {
     const mount = (hotkey: { toggle: boolean } | null, onHotkeyHandled = vi.fn()) => {
       const ui = (h: typeof hotkey) => <Capture queue={queue} send={vi.fn()} hotkey={h} onHotkeyHandled={onHotkeyHandled} />;
@@ -315,5 +415,89 @@ describe("App shell", () => {
     fireEvent.click(screen.getByRole("button", { name: "Notiz schließen" }));
     expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["Neue Notiz"]);
     expect((screen.getByLabelText("Editor") as HTMLTextAreaElement).value).toBe("");
+  });
+
+  it("Cmd/Ctrl+K opens the search panel and focuses its input; again while open it refocuses", () => {
+    render(<App />);
+    expect(screen.queryByRole("search")).toBeNull();
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    const input = screen.getByLabelText("Suchbegriff");
+    expect(document.activeElement).toBe(input);
+    (screen.getByLabelText("Editor") as HTMLElement).focus();
+    fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    expect(screen.getAllByRole("search")).toHaveLength(1);
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("Cmd+K does nothing behind the settings dialog", () => {
+    render(<App />);
+    fireEvent.keyDown(window, { key: ",", ctrlKey: true });
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    expect(screen.queryByRole("search")).toBeNull();
+  });
+
+  it("the global search hotkey event opens the panel and keeps it open on a second press", () => {
+    render(<App />);
+    const press = () => act(() => void window.dispatchEvent(new CustomEvent("picky:open-search")));
+    press();
+    expect(document.activeElement).toBe(screen.getByLabelText("Suchbegriff"));
+    press();
+    expect(screen.getAllByRole("search")).toHaveLength(1);
+  });
+
+  describe("Settings: hotkey flags and Textbreite", () => {
+    const open = () => (render(<App />), fireEvent.keyDown(window, { key: ",", ctrlKey: true }));
+    /** The "aktiv" checkbox of one hotkey row. */
+    const aktiv = (name: string) => within(document.querySelector(`[data-hotkey="${name}"]`) as HTMLElement).getByLabelText("aktiv") as HTMLInputElement;
+
+    it("each of the three hotkeys has an aktiv checkbox; the flag is stored with the combination", async () => {
+      open();
+      expect((screen.getByLabelText("Suche öffnen") as HTMLInputElement).value).toBe("CommandOrControl+Shift+K");
+      for (const name of ["dictation", "toggle", "search"]) expect(aktiv(name).checked).toBe(true);
+      fireEvent.click(aktiv("search"));
+      await waitFor(() => expect(JSON.parse(localStorage.getItem("picky.hotkeys")!).search).toEqual({ key: "CommandOrControl+Shift+K", enabled: false }));
+      expect(aktiv("search").checked).toBe(false);
+      expect((screen.getByLabelText("Suche öffnen") as HTMLInputElement).value).toBe("CommandOrControl+Shift+K"); // still remembered
+      fireEvent.click(aktiv("search"));
+      await waitFor(() => expect(JSON.parse(localStorage.getItem("picky.hotkeys")!).search.enabled).toBe(true));
+    });
+
+    it("a disabled hotkey stays disabled after reopening", async () => {
+      localStorage.setItem("picky.hotkeys", JSON.stringify({ toggle: { key: "Control+Alt+T", enabled: false } }));
+      open();
+      expect(aktiv("toggle").checked).toBe(false);
+      expect((screen.getByLabelText("App ein-/ausblenden") as HTMLInputElement).value).toBe("Control+Alt+T");
+    });
+
+    it("Textbreite: full width by default, a custom px width is applied live and stored, invalid input is clamped", async () => {
+      const width = () => (document.querySelector("main") as HTMLElement).style.getPropertyValue("--pn-text-width");
+      open();
+      expect((screen.getByLabelText("Volle Breite") as HTMLInputElement).checked).toBe(true);
+      expect(width()).toBe("none");
+      fireEvent.click(screen.getByLabelText("Eigene Breite"));
+      expect(width()).toBe("800px");
+      const px = screen.getByLabelText("Breite in px") as HTMLInputElement;
+      expect([px.min, px.max, px.step]).toEqual(["400", "2000", "20"]);
+      fireEvent.change(px, { target: { value: "1000" } });
+      expect(width()).toBe("1000px");
+      expect(localStorage.getItem("picky.textWidth")).toBe("1000");
+      fireEvent.change(px, { target: { value: "100" } }); // mid-typing: not applied yet
+      expect(width()).toBe("1000px");
+      fireEvent.blur(px);
+      expect(width()).toBe("400px");
+      expect(px.value).toBe("400");
+      fireEvent.change(px, { target: { value: "5000" } });
+      fireEvent.blur(px);
+      expect(width()).toBe("2000px");
+      fireEvent.click(screen.getByLabelText("Volle Breite"));
+      expect(width()).toBe("none");
+      expect(localStorage.getItem("picky.textWidth")).toBe("full");
+    });
+
+    it("a stored width is applied at startup", () => {
+      localStorage.setItem("picky.textWidth", "640");
+      render(<App />);
+      expect((document.querySelector("main") as HTMLElement).style.getPropertyValue("--pn-text-width")).toBe("640px");
+    });
   });
 });

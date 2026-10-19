@@ -1,10 +1,10 @@
 import { createClient, type PickyClient } from "@pickynotes/shared";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CaptureView } from "./CaptureView";
-import { addNote, closeNote, loadNotes, noteTitle, saveNotes, setNoteText } from "./lib/notes";
+import { addNote, closeNote, loadNotes, newNote, noteTitle, saveNotes, setNoteText } from "./lib/notes";
 import { CaptureQueue } from "./lib/queue";
-import { loadHotkeys } from "./lib/settings";
-import { applyHotkeys, inTauri, screenshot, token } from "./lib/tauri";
+import { loadHotkeys, loadTextWidth, saveTextWidth } from "./lib/settings";
+import { applyHotkeys, inTauri, revealOutbox, screenshot, tauriOutbox, token } from "./lib/tauri";
 import { SearchView } from "./SearchView";
 import { SettingsModal, URL_KEY } from "./SettingsModal";
 
@@ -15,23 +15,31 @@ async function client(): Promise<PickyClient> {
   return createClient({ baseUrl, token: t });
 }
 
+const configured = async () => !!localStorage.getItem(URL_KEY) && !!(await token.get());
+
 export function App() {
   const [notes, setNotes] = useState(loadNotes);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [textWidth, setTextWidth] = useState(loadTextWidth);
   const [hotkey, setHotkey] = useState<{ toggle: boolean } | null>(null);
-  const queue = useMemo(() => new CaptureQueue(), []);
+  const queue = useMemo(() => new CaptureQueue("pickynotes-queue", tauriOutbox()), []);
   const send = async (i: Parameters<PickyClient["capture"]>[0]) => (await client()).capture(i);
 
   useEffect(() => void saveNotes(notes), [notes]);
   const settingsOpenRef = useRef(false);
   settingsOpenRef.current = settingsOpen;
+  const searchOpenRef = useRef(false);
+  searchOpenRef.current = searchOpen;
 
   useEffect(() => {
     void applyHotkeys(null, loadHotkeys()).then(({ errors }) => Object.keys(errors).length && console.warn("Hotkeys nicht registriert:", errors));
     // Here, not in CaptureView: only App can close the search panel. CaptureView stays mounted so a running recording survives tab switches.
     const onHotkey = (e: Event) => (setSearchOpen(false), setHotkey({ toggle: !!(e as CustomEvent).detail?.toggle }));
     window.addEventListener("picky:focus-capture", onHotkey);
+    // Already open: just put the cursor back into its input (a fresh mount focuses it itself).
+    const openSearch = () => (searchOpenRef.current ? document.querySelector<HTMLInputElement>('[role="search"] input')?.focus() : setSearchOpen(true));
+    window.addEventListener("picky:open-search", openSearch);
     // Capture phase: CodeMirror's mac keymap binds Ctrl-n and would swallow it while the editor has focus.
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
@@ -39,6 +47,7 @@ export function App() {
       if ((e.target as Element | null)?.closest?.("[data-shortcut-capture]")) return; // recording a hotkey, not using one
       if (e.key === ",") (e.preventDefault(), setSettingsOpen(true));
       else if (e.key.toLowerCase() === "n") (e.preventDefault(), setNotes(addNote));
+      else if (e.key.toLowerCase() === "k") (e.preventDefault(), openSearch());
     };
     window.addEventListener("keydown", onKey, true);
     const flush = () => void queue.flush(send).catch(() => {});
@@ -49,6 +58,7 @@ export function App() {
     const unlisten = inTauri() ? import("@tauri-apps/api/event").then((m) => m.listen("picky:open-settings", () => setSettingsOpen(true))) : undefined;
     return () => {
       window.removeEventListener("picky:focus-capture", onHotkey);
+      window.removeEventListener("picky:open-search", openSearch);
       window.removeEventListener("keydown", onKey, true);
       window.removeEventListener("online", flush);
       clearInterval(timer);
@@ -57,7 +67,7 @@ export function App() {
   }, [queue]);
 
   return (
-    <main>
+    <main style={{ "--pn-text-width": textWidth === null ? "none" : `${textWidth}px` } as React.CSSProperties}>
       <header className="topbar" data-tauri-drag-region inert={settingsOpen}>
         <div role="tablist" aria-label="Notizen" data-tauri-drag-region>
           {notes.notes.map((n) => (
@@ -76,6 +86,9 @@ export function App() {
         queue={queue}
         send={send}
         screenshot={screenshot}
+        configured={configured}
+        onOpenAsNote={(text) => setNotes((s) => ((n) => ({ active: n.id, notes: [...s.notes, n] }))(newNote(text)))}
+        onRevealOutbox={inTauri() ? () => void revealOutbox() : undefined}
         hotkey={hotkey}
         onHotkeyHandled={() => setHotkey(null)}
         notes={notes.notes}
@@ -90,7 +103,7 @@ export function App() {
           <SearchView search={async (q) => (await (await client()).search(q)).hits} />
         </div>
       )}
-      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} textWidth={textWidth} onTextWidth={(px) => (setTextWidth(px), saveTextWidth(px))} />}
     </main>
   );
 }

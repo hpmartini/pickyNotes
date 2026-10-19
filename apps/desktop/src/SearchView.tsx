@@ -20,7 +20,7 @@ export function SearchView({ search }: { search: (q: string) => Promise<SearchHi
   return (
     <section aria-label="Suche">
       <form onSubmit={run} role="search">
-        <input aria-label="Suchbegriff" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Suchen…" />
+        <input aria-label="Suchbegriff" autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Suchen…" />
         <button type="submit">Suchen</button>
       </form>
       {error && <p role="alert">{error}</p>}

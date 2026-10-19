@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { DEFAULT_HOTKEYS, keydownToAccelerator, loadHotkeys, loadShell, saveHotkeys, saveShell, type Hotkeys, type ShellPrefs } from "./lib/settings";
+import { clampTextWidth, DEFAULT_HOTKEYS, keydownToAccelerator, loadHotkeys, loadShell, saveHotkeys, saveShell, TEXT_WIDTH, type Hotkeys, type ShellPrefs } from "./lib/settings";
 import { applyHotkeys, setDockVisible, setTrayVisible, token, type HotkeyErrors } from "./lib/tauri";
 
 export const URL_KEY = "picky.url";
@@ -15,10 +15,10 @@ function trapTab(e: React.KeyboardEvent<HTMLDivElement>) {
   }
 }
 
-const HOTKEY_LABELS: Record<keyof Hotkeys, string> = { dictation: "Diktat starten/stoppen", toggle: "App ein-/ausblenden" };
+const HOTKEY_LABELS: Record<keyof Hotkeys, string> = { dictation: "Diktat starten/stoppen", toggle: "App ein-/ausblenden", search: "Suche öffnen" };
 
 /** Modal dialog opened with Cmd/Ctrl+, : server connection, global hotkeys, Dock and menu-bar icon. */
-export function SettingsModal({ onClose }: { onClose: () => void }) {
+export function SettingsModal({ onClose, textWidth, onTextWidth }: { onClose: () => void; textWidth: number | null; onTextWidth: (px: number | null) => void }) {
   const dialog = useRef<HTMLDivElement>(null);
   // once: onClose changes identity on every App render and must not steal focus again
   useEffect(() => {
@@ -41,6 +41,7 @@ export function SettingsModal({ onClose }: { onClose: () => void }) {
         </header>
         <ServerForm />
         <HotkeySettings />
+        <TextWidthSettings width={textWidth} onChange={onTextWidth} />
         <ShellSettings />
       </div>
     </div>
@@ -89,26 +90,64 @@ function HotkeySettings() {
     if (e.key === "Tab" || e.key === "Escape") return; // keep keyboard navigation and Esc-to-close
     e.preventDefault();
     const acc = keydownToAccelerator(e.nativeEvent);
-    if (!acc || acc === keys[name]) return;
-    const other = name === "toggle" ? "dictation" : "toggle";
-    if (acc === keys[other]) return setErrors({ [name]: `Schon belegt: ${HOTKEY_LABELS[other]}` });
+    if (!acc || acc === keys[name].key) return;
+    const other = (Object.keys(keys) as (keyof Hotkeys)[]).find((o) => o !== name && keys[o].enabled && keys[o].key === acc);
+    if (other) return setErrors({ [name]: `Schon belegt: ${HOTKEY_LABELS[other]}` });
     const field = e.currentTarget as HTMLElement;
-    void change({ ...keys, [name]: acc }).then(() => field.focus()); // disabling while pending dropped the focus
+    void change({ ...keys, [name]: { ...keys[name], key: acc } }).then(() => field.focus()); // disabling while pending dropped the focus
+  }
+
+  function toggleEnabled(name: keyof Hotkeys, enabled: boolean) {
+    const clash = enabled && (Object.keys(keys) as (keyof Hotkeys)[]).find((o) => o !== name && keys[o].enabled && keys[o].key === keys[name].key);
+    if (clash) return setErrors({ [name]: `Schon belegt: ${HOTKEY_LABELS[clash]}` });
+    void change({ ...keys, [name]: { ...keys[name], enabled } });
   }
 
   return (
     <fieldset>
       <legend>Tastenkürzel (global)</legend>
       {(Object.keys(HOTKEY_LABELS) as (keyof Hotkeys)[]).map((name) => (
-        <div key={name}>
+        <div key={name} data-hotkey={name}>
           <label>
-            {HOTKEY_LABELS[name]}
-            <input readOnly data-shortcut-capture disabled={pending} value={keys[name]} onKeyDown={(e) => capture(name, e)} placeholder="Kombination drücken" aria-invalid={!!errors[name]} />
+            <span id={`hotkey-${name}`}>{HOTKEY_LABELS[name]}</span>
+            <input readOnly data-shortcut-capture disabled={pending} value={keys[name].key} onKeyDown={(e) => capture(name, e)} placeholder="Kombination drücken" aria-invalid={!!errors[name]} />
           </label>
+          <label className="check"><input type="checkbox" aria-describedby={`hotkey-${name}`} disabled={pending} checked={keys[name].enabled} onChange={(e) => toggleEnabled(name, e.target.checked)} /> aktiv</label>
           {errors[name] && <p role="alert">{errors[name]}</p>}
         </div>
       ))}
       <button type="button" disabled={pending} onClick={() => void change(DEFAULT_HOTKEYS)}>Zurücksetzen</button>
+    </fieldset>
+  );
+}
+
+/** "Volle Breite" (default) or a custom column width in px; applied live by App. */
+function TextWidthSettings({ width, onChange }: { width: number | null; onChange: (px: number | null) => void }) {
+  const [text, setText] = useState(String(width ?? TEXT_WIDTH.initial));
+  // Typing "800" passes through "8" and "80": only values in range are applied, the field is normalised on blur.
+  const apply = (v: string) => {
+    setText(v);
+    const px = Number(v);
+    if (v.trim() && px >= TEXT_WIDTH.min && px <= TEXT_WIDTH.max) onChange(Math.round(px));
+  };
+  return (
+    <fieldset>
+      <legend>Textbreite</legend>
+      <label className="check"><input type="radio" name="text-width" checked={width === null} onChange={() => onChange(null)} /> Volle Breite</label>
+      <label className="check"><input type="radio" name="text-width" checked={width !== null} onChange={() => onChange(clampTextWidth(Number(text)))} /> Eigene Breite</label>
+      <label>
+        Breite in px
+        <input
+          type="number"
+          min={TEXT_WIDTH.min}
+          max={TEXT_WIDTH.max}
+          step={TEXT_WIDTH.step}
+          value={text}
+          disabled={width === null}
+          onChange={(e) => apply(e.target.value)}
+          onBlur={() => (setText(String(clampTextWidth(Number(text)))), onChange(clampTextWidth(Number(text))))}
+        />
+      </label>
     </fieldset>
   );
 }

@@ -1,20 +1,61 @@
+/** The combination is remembered while the hotkey is off; `enabled: false` means it is not registered at all. */
+export interface HotkeyConfig {
+  key: string;
+  enabled: boolean;
+}
 export interface Hotkeys {
   /** Toggles dictation (first press starts, second stops). */
-  dictation: string;
+  dictation: HotkeyConfig;
   /** Hides the window when it is visible and focused, otherwise shows and focuses it. */
-  toggle: string;
+  toggle: HotkeyConfig;
+  /** Shows and focuses the window and opens the search panel. */
+  search: HotkeyConfig;
 }
 
 // Ctrl+Alt+V avoids macOS Ctrl+Alt+Space (input-source switch) and WhisperStorm's Option+Space push-to-talk.
-export const DEFAULT_HOTKEYS: Hotkeys = { dictation: "Control+Alt+V", toggle: "CommandOrControl+Shift+Space" };
+export const DEFAULT_HOTKEYS: Hotkeys = {
+  dictation: { key: "Control+Alt+V", enabled: true },
+  toggle: { key: "CommandOrControl+Shift+Space", enabled: true },
+  search: { key: "CommandOrControl+Shift+K", enabled: true },
+};
 
 const HOTKEYS_KEY = "picky.hotkeys";
 const SHELL_KEY = "picky.shell";
+const WIDTH_KEY = "picky.textWidth";
+
+export const TEXT_WIDTH = { min: 400, max: 2000, step: 20, initial: 800 };
+
+/** Invalid or out-of-range input becomes the nearest valid width. */
+export const clampTextWidth = (px: number): number => (Number.isFinite(px) ? Math.min(TEXT_WIDTH.max, Math.max(TEXT_WIDTH.min, Math.round(px))) : TEXT_WIDTH.initial);
+
+/** Editor text column width in px; null = full width (default). */
+export function loadTextWidth(): number | null {
+  try {
+    const raw = localStorage.getItem(WIDTH_KEY);
+    return raw === null || raw === "full" || !Number.isFinite(Number(raw)) ? null : clampTextWidth(Number(raw));
+  } catch {
+    return null;
+  }
+}
+
+export function saveTextWidth(px: number | null): void {
+  try {
+    localStorage.setItem(WIDTH_KEY, px === null ? "full" : String(clampTextWidth(px)));
+  } catch {
+    /* storage unavailable: applies for this session only */
+  }
+}
 
 export function loadHotkeys(): Hotkeys {
   try {
-    const p = JSON.parse(localStorage.getItem(HOTKEYS_KEY) ?? "null") as Partial<Hotkeys> | null;
-    return { dictation: p?.dictation || DEFAULT_HOTKEYS.dictation, toggle: p?.toggle || DEFAULT_HOTKEYS.toggle };
+    const p = JSON.parse(localStorage.getItem(HOTKEYS_KEY) ?? "null") as Record<string, unknown> | null;
+    const one = (name: keyof Hotkeys): HotkeyConfig => {
+      const v = p?.[name] as string | Partial<HotkeyConfig> | undefined;
+      // Before the enabled flag, a hotkey was stored as the bare combination: those count as enabled.
+      if (typeof v === "string") return { key: v || DEFAULT_HOTKEYS[name].key, enabled: true };
+      return { key: v?.key || DEFAULT_HOTKEYS[name].key, enabled: v?.enabled !== false };
+    };
+    return { dictation: one("dictation"), toggle: one("toggle"), search: one("search") };
   } catch {
     return DEFAULT_HOTKEYS;
   }

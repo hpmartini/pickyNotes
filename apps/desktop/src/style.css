@@ -50,7 +50,7 @@ button:focus-visible, .button:focus-within, input:focus-visible { outline: 2px s
 .editor { flex: 1; min-height: 160px; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; transition: border-color var(--ease); }
 .editor:focus-within { border-color: var(--accent); }
 /* the editor reserves 208px below the text for scrolling past the end, which made a scrollbar permanent */
-.editor .cm-content { padding: var(--space-3) var(--space-4); }
+.editor .cm-content { padding: var(--space-3) var(--space-4); max-width: var(--pn-text-width, none); margin-inline: auto; } /* Textbreite setting; centred when narrower than the window */
 .editor .cm-scroller { overflow-y: auto; }
 .actions { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
 .actions .status { margin: 0 0 0 auto; min-height: 1.5em; color: var(--muted); font-size: 13px; }
@@ -139,3 +139,8 @@ label.check input { width: auto; }
 /* File-chip decoration for non-image attachments. */
 .cm-pn-file-chip { padding: 0 6px; border-radius: 4px; background: var(--surface); border: 1px solid var(--line); font-size: 0.9em; }
 
+
+/* List markers while typing (lib/editor.ts): a bare marker is plain text, "- " shows its gap before the first letter. */
+.cm-line.cm-pn-bare-marker { padding-left: 0 !important; text-indent: 0 !important; }
+.cm-pn-bare-marker .cm-atomic-list-marker { display: inline; width: auto; margin: 0; text-align: left; }
+.cm-pn-gap { padding-right: 0.3em; margin-right: 0; } /* 0.9em marker + 0.3em = Atomic's 1.2em alcove */

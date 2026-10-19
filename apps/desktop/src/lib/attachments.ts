@@ -23,8 +23,8 @@ function db(): Promise<IDBDatabase> {
   }));
 }
 
-export async function stashAttachment(file: { name: string; mime: string; bytes: Uint8Array }): Promise<{ id: string; markdownTarget: string }> {
-  const id = crypto.randomUUID();
+export async function stashAttachment(file: { name: string; mime: string; bytes: Uint8Array; id?: string }): Promise<{ id: string; markdownTarget: string }> {
+  const id = file.id ?? crypto.randomUUID();
   const d = await db();
   await new Promise<void>((resolve, reject) => {
     const tx = d.transaction(STORE, "readwrite");
@@ -62,6 +62,11 @@ export async function dropAttachments(text: string, keep = ""): Promise<void> {
   const store = d.transaction(STORE, "readwrite").objectStore(STORE);
   const live = pendingIds(keep);
   for (const id of pendingIds(text)) if (!live.has(id)) store.delete(id);
+}
+
+/** Puts the bytes of a queued capture back under their old ids, so `pending:<id>` links in a reopened note work again. */
+export async function restoreAttachments(list: { id: string; name: string; mime: string; data: string }[] = []): Promise<void> {
+  for (const a of list) if (!(await getAttachment(a.id))) await stashAttachment({ id: a.id, name: a.name, mime: a.mime, bytes: Uint8Array.from(atob(a.data), (c) => c.charCodeAt(0)) });
 }
 
 const toBase64 = (bytes: Uint8Array) => {
