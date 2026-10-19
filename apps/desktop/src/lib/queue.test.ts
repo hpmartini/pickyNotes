@@ -145,6 +145,14 @@ describe("CaptureQueue", () => {
       await expect(broken.enqueue(cap("y"))).rejects.toThrow();
     });
 
+    it("throws when IndexedDB fails and there is no outbox (nothing stored anywhere)", async () => {
+      const q = new CaptureQueue(`q${n++}`);
+      const gone = Promise.reject(new Error("idb gone"));
+      gone.catch(() => {});
+      (q as unknown as { db: Promise<unknown> }).db = gone;
+      await expect(q.enqueue(cap("y"))).rejects.toThrow("idb gone");
+    });
+
     it("notifies subscribers when the queue changes", async () => {
       const q = new CaptureQueue(`q${n++}`);
       const seen = vi.fn();

@@ -373,3 +373,9 @@ Mehrere Review-Funde waren veraltet (Rust-Command, CaptureView-Verdrahtung, Serv
 - **Nicht verifiziert (Punkt 6):** echtes Aussehen im WKWebView (Lücke, Cursor-Position, `!important` gegen Atomics Inline-Style); dass die Ersetzung gleicher Bereiche in CodeMirror Atomics Widget verdrängt, ist durch die Tests (kein `.cm-atomic-bullet` bei nacktem Marker) belegt, hängt aber an CM6-Interna.
 - **Nicht verifiziert (nativ):** Ordner zeigen (`open <dir>` im Finder), Datei- und Ordnerrechte auf dem echten App-Data-Pfad (Tests laufen im Temp-Ordner), globale Kürzel (un)registrieren (Plugin im Test gemockt), Anzeige über Vollbild (oben).
 
+
+### Follow-up Review-Befunde Punkt 1 (2026-10-19)
+
+- **Blocker:** „Als Notiz öffnen“ löschte beide Kopien, obwohl `saveNotes()` (localStorage) fehlschlagen konnte (Quota) – Neustart = Notiz weg. Fix: `onOpenAsNote` liefert `boolean`; `App.openAsNote` schreibt zuerst `saveNotes(next)`, bei Fehler bleibt State und Queue/Postausgang unberührt, Status „Notiz nicht gespeichert – bleibt im Postausgang“. Test: `CaptureView.test.tsx` (rot vor dem Fix).
+- **Major:** Ohne Outbox zählte `Promise.allSettled` das `undefined` als erfolgreichen Schreibvorgang; bei IndexedDB-Fehler löste `enqueue` mit `key: undefined` auf statt zu werfen. Fix: fehlender Outbox = abgelehnt; wirft, wenn kein vorhandener Speicher schrieb. Test: `queue.test.ts` (rot vor dem Fix).
+- Gates: tsc 0, Unit 192 grün, e2e 77 grün. `cargo test` unverändert (kein Rust-Diff).

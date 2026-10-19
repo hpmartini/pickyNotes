@@ -58,10 +58,11 @@ export class CaptureQueue {
     await this.ready;
     const clientId = input.clientId ?? crypto.randomUUID();
     const item = { input: { ...input, clientId }, queuedAt: Date.now() } satisfies QueuedCapture;
-    const [idb, file] = await Promise.allSettled([this.db.then((d) => d.add(STORE, item) as Promise<number>), this.outbox?.write(item)]);
-    if (idb.status === "rejected" && file.status === "rejected") throw idb.reason;
+    // An absent outbox is a missing store, not a successful write.
+    const [idb, file] = await Promise.allSettled([this.db.then((d) => d.add(STORE, item) as Promise<number>), this.outbox ? this.outbox.write(item) : Promise.reject(new Error("no outbox"))]);
+    if (idb.status === "rejected" && (file.status === "rejected" || !this.outbox)) throw idb.reason;
     this.emit();
-    return { key: idb.status === "fulfilled" ? idb.value : undefined, clientId, stored: idb.status === "fulfilled" && file.status === "fulfilled" };
+    return { key: idb.status === "fulfilled" ? idb.value : undefined, clientId, stored: idb.status === "fulfilled" && (file.status === "fulfilled" || !this.outbox) };
   }
 
   async list(): Promise<QueuedCapture[]> {

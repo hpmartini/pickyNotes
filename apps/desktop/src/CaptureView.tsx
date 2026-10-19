@@ -29,7 +29,8 @@ interface Props {
   /** False while the server URL or token is missing: saving then only queues. Default: configured. */
   configured?: () => Promise<boolean>;
   /** "Als Notiz öffnen": the text of a pending capture goes into a new note tab. */
-  onOpenAsNote?: (text: string) => void;
+  /** Returns true only once the new tab is persisted; the queued copies are dropped only then. */
+  onOpenAsNote?: (text: string) => boolean;
   /** Shows the outbox folder in the file manager (Tauri only). */
   onRevealOutbox?: () => void;
 }
@@ -101,7 +102,7 @@ export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled, 
   /** The text goes into a new tab first; only then does the capture leave the queue and the outbox. */
   async function openAsNote(item: QueuedCapture) {
     await restoreAttachments(item.input.attachments);
-    onOpenAsNote?.(item.input.text ?? "");
+    if (!onOpenAsNote?.(item.input.text ?? "")) return setStatus("Notiz nicht gespeichert – bleibt im Postausgang");
     await queue.discard(item.key!);
   }
 

@@ -27,6 +27,17 @@ export function App() {
   const send = async (i: Parameters<PickyClient["capture"]>[0]) => (await client()).capture(i);
 
   useEffect(() => void saveNotes(notes), [notes]);
+  const notesRef = useRef(notes);
+  notesRef.current = notes;
+  /** Persists first; on a failed write the state stays untouched and the caller keeps the queued copies. */
+  const openAsNote = (text: string) => {
+    const n = newNote(text);
+    const next = { active: n.id, notes: [...notesRef.current.notes, n] };
+    if (!saveNotes(next)) return false;
+    notesRef.current = next;
+    setNotes(next);
+    return true;
+  };
   const settingsOpenRef = useRef(false);
   settingsOpenRef.current = settingsOpen;
   const searchOpenRef = useRef(false);
@@ -87,7 +98,7 @@ export function App() {
         send={send}
         screenshot={screenshot}
         configured={configured}
-        onOpenAsNote={(text) => setNotes((s) => ((n) => ({ active: n.id, notes: [...s.notes, n] }))(newNote(text)))}
+        onOpenAsNote={openAsNote}
         onRevealOutbox={inTauri() ? () => void revealOutbox() : undefined}
         hotkey={hotkey}
         onHotkeyHandled={() => setHotkey(null)}

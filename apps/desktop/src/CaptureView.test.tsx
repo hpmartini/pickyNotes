@@ -289,13 +289,27 @@ describe("CaptureView", () => {
       const { files, outbox } = fakeOutbox();
       const queue = new CaptureQueue(`c${n++}`, outbox);
       await queue.enqueue({ kind: "text", source: "typed", text: "zurück in den Editor" });
-      const onOpenAsNote = vi.fn();
+      const onOpenAsNote = vi.fn(() => true);
       render(<Capture queue={queue} send={vi.fn()} onOpenAsNote={onOpenAsNote} />);
       fireEvent.click(await screen.findByRole("button", { name: "Als Notiz öffnen" }));
       await waitFor(() => expect(onOpenAsNote).toHaveBeenCalledWith("zurück in den Editor"));
       await waitFor(() => expect(screen.queryByRole("region", { name: "Ausstehend" })).toBeNull());
       expect(await queue.list()).toEqual([]);
       expect(files.size).toBe(0);
+    });
+
+    it("Als Notiz öffnen keeps both copies when the new tab could not be persisted, so a restart still has the note", async () => {
+      const { files, outbox } = fakeOutbox();
+      const queue = new CaptureQueue(`c${n++}`, outbox);
+      await queue.enqueue({ kind: "text", source: "typed", text: "darf nicht verloren gehen" });
+      const onOpenAsNote = vi.fn(() => false);
+      render(<Capture queue={queue} send={vi.fn()} onOpenAsNote={onOpenAsNote} />);
+      fireEvent.click(await screen.findByRole("button", { name: "Als Notiz öffnen" }));
+      await waitFor(() => expect(onOpenAsNote).toHaveBeenCalled());
+      await waitFor(() => expect(screen.getByRole("status").textContent).toMatch(/nicht gespeichert/));
+      expect(await queue.list()).toHaveLength(1);
+      expect(files.size).toBe(1);
+      expect(await new CaptureQueue(`c${n++}`, outbox).list()).toHaveLength(1); // restart: restored from the outbox
     });
 
     it("Erneut senden delivers a pending note; Ordner zeigen reveals the outbox folder", async () => {
