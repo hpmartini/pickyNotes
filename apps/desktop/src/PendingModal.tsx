@@ -24,8 +24,10 @@ export function PendingModal({ pending, rejected, onClose, onOpenAsNote, onRetry
             {pending.map((i) => (
               <li key={i.key}>
                 <span className="item-title">{title(i)}</span>
-                {onOpenAsNote && i.input.text !== undefined && <button onClick={() => onOpenAsNote(i)}>Als Notiz öffnen</button>}
-                <button onClick={() => onRetry(i.key!)}>Erneut senden</button>
+                <span className="item-actions">
+                  {onOpenAsNote && i.input.text !== undefined && <button onClick={() => onOpenAsNote(i)}>Als Notiz öffnen</button>}
+                  <button onClick={() => onRetry(i.key!)}>Erneut senden</button>
+                </span>
               </li>
             ))}
           </ul>
@@ -38,8 +40,10 @@ export function PendingModal({ pending, rejected, onClose, onOpenAsNote, onRetry
             {rejected.map((i) => (
               <li key={i.key}>
                 <span className="item-title">{title(i)}<small className="reason">{i.rejected}</small></span>
-                <button onClick={() => onRetry(i.key!)}>Erneut senden</button>
-                <button onClick={() => onDiscard(i.key!)}>Verwerfen</button>
+                <span className="item-actions">
+                  <button onClick={() => onRetry(i.key!)}>Erneut senden</button>
+                  <button onClick={() => onDiscard(i.key!)}>Verwerfen</button>
+                </span>
               </li>
             ))}
           </ul>
