@@ -239,18 +239,18 @@ export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled, 
         <p className="status" role="status" aria-live="polite">{status}</p>
       </div>
       {pending.length > 0 && (
-        <section className="rejected" aria-label="Ausstehend">
+        <section className="rejected pending" aria-label="Ausstehend">
           <h2>Ausstehend ({pending.length})</h2>
           <ul>
             {pending.map((i) => (
               <li key={i.key}>
-                {(i.input.text ?? i.input.filename ?? i.input.kind).slice(0, 60)}{" "}
-                {onOpenAsNote && i.input.text !== undefined && <button onClick={() => void openAsNote(i)}>Als Notiz öffnen</button>}{" "}
+                <span className="item-title">{(i.input.text ?? i.input.filename ?? i.input.kind).slice(0, 60)}</span>
+                {onOpenAsNote && i.input.text !== undefined && <button onClick={() => void openAsNote(i)}>Als Notiz öffnen</button>}
                 <button onClick={() => void retry(i.key!)}>Erneut senden</button>
               </li>
             ))}
           </ul>
-          {onRevealOutbox && <button onClick={onRevealOutbox}>Ordner zeigen</button>}
+          {onRevealOutbox && <button className="link" onClick={onRevealOutbox}>Ordner zeigen</button>}
         </section>
       )}
       {rejected.length > 0 && (

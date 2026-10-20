@@ -312,9 +312,44 @@ fn overlay_behavior(current: objc2_app_kit::NSWindowCollectionBehavior) -> objc2
     (current - B::MoveToActiveSpace - B::FullScreenPrimary - B::FullScreenNone) | B::CanJoinAllSpaces | B::FullScreenAuxiliary
 }
 
-/// Makes the window able to appear over fullscreen apps (collection behavior + floating level). Call it every time the window is shown
-/// and after the activation policy changed: macOS drops or ignores these settings across hide/show and Regular/Accessory switches,
-/// so setting them once at launch was not enough. Runs on the main thread, as AppKit requires.
+/// Turns tao's NSWindow into a non-activating NSPanel in place. A plain NSWindow of a Regular (Dock) app is not shown over another app's
+/// fullscreen Space even with FullScreenAuxiliary (measured: Accessory window shows, Regular window does not, Regular NSPanel does).
+/// NSPanel and NSWindow have the same instance size (520 bytes), so swapping the class of the live object is safe; the new class keeps
+/// tao's `focusable` ivar so tao's later ivar access still finds it. Idempotent.
+#[cfg(target_os = "macos")]
+fn make_panel(ns: &objc2_app_kit::NSWindow) -> &objc2_app_kit::NSPanel {
+    use objc2::runtime::{AnyClass, AnyObject, Bool, ClassBuilder, NSObjectProtocol, Sel};
+    use objc2::{ClassType, sel};
+    use objc2_app_kit::{NSPanel, NSWindowStyleMask};
+    use std::sync::OnceLock;
+    static CLASS: OnceLock<&'static AnyClass> = OnceLock::new();
+    unsafe extern "C-unwind" fn yes(_: &AnyObject, _: Sel) -> Bool {
+        Bool::YES
+    }
+    let class = *CLASS.get_or_init(|| {
+        let mut b = ClassBuilder::new(c"PickyPanel", NSPanel::class()).expect("PickyPanel registered twice");
+        b.add_ivar::<Bool>(c"focusable");
+        // SAFETY: the signatures match canBecomeKeyWindow/canBecomeMainWindow (-> BOOL).
+        unsafe {
+            b.add_method(sel!(canBecomeKeyWindow), yes as unsafe extern "C-unwind" fn(_, _) -> _);
+            b.add_method(sel!(canBecomeMainWindow), yes as unsafe extern "C-unwind" fn(_, _) -> _);
+        }
+        b.register()
+    });
+    let obj = ns as *const _ as *mut AnyObject;
+    // SAFETY: same instance size as the original class (see above); the object stays alive and is only touched on the main thread.
+    unsafe {
+        if !ns.isKindOfClass(class) {
+            objc2::ffi::object_setClass(obj, class as *const AnyClass);
+        }
+        ns.setStyleMask(ns.styleMask() | NSWindowStyleMask::NonactivatingPanel);
+        &*(obj as *const NSPanel)
+    }
+}
+
+/// Makes the window able to appear over fullscreen apps (panel + collection behavior + floating level). Call it every time the window
+/// is shown and after the activation policy changed: macOS drops or ignores these settings across hide/show and Regular/Accessory
+/// switches, so setting them once at launch was not enough. Runs on the main thread, as AppKit requires.
 fn prepare_overlay(window: &tauri::WebviewWindow) {
     #[cfg(target_os = "macos")]
     {
@@ -324,6 +359,10 @@ fn prepare_overlay(window: &tauri::WebviewWindow) {
             if let Ok(ptr) = w.ns_window() {
                 // SAFETY: ns_window() is the live NSWindow of this webview window and we are on the main thread.
                 let ns = unsafe { &*(ptr as *const NSWindow) };
+                let panel = make_panel(ns);
+                panel.setFloatingPanel(true);
+                panel.setHidesOnDeactivate(false);
+                panel.setBecomesKeyOnlyIfNeeded(false);
                 ns.setCollectionBehavior(overlay_behavior(ns.collectionBehavior()));
                 ns.setLevel(NSFloatingWindowLevel);
             }
