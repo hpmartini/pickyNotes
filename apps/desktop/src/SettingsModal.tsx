@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Dialog } from "./Dialog";
-import { clampTextWidth, DEFAULT_HOTKEYS, DEFAULT_NEW_TAB_KEY, keydownToAccelerator, loadHotkeys, loadNewTabKey, loadShell, saveHotkeys, saveNewTabKey, saveShell, TEXT_WIDTH, type Hotkeys, type ShellPrefs } from "./lib/settings";
+import { clampTextWidth, DEFAULT_HOTKEYS, DEFAULT_SHORTCUTS, keydownToAccelerator, loadHotkeys, loadShell, loadShortcuts, saveHotkeys, saveShell, saveShortcuts, TEXT_WIDTH, type Hotkeys, type ShellPrefs, type Shortcuts } from "./lib/settings";
 import { applyHotkeys, setDockVisible, setTrayVisible, token, type HotkeyErrors } from "./lib/tauri";
 
 export const URL_KEY = "picky.url";
@@ -13,36 +13,52 @@ export function SettingsModal({ onClose, textWidth, onTextWidth }: { onClose: ()
     <Dialog title="Einstellungen" closeLabel="Einstellungen schließen" onClose={onClose}>
       <ServerForm />
       <HotkeySettings />
-      <NewTabSetting />
+      <ShortcutSettings />
       <TextWidthSettings width={textWidth} onChange={onTextWidth} />
       <ShellSettings />
     </Dialog>
   );
 }
 
-/** Neuer-Tab shortcut: only while the window has focus, so no global registration and no clash with other apps. */
-function NewTabSetting() {
-  const [key, setKey] = useState(loadNewTabKey);
-  const set = (k: string) => (setKey(k), saveNewTabKey(k));
+const SHORTCUT_LABELS: Record<keyof Shortcuts, string> = {
+  newTab: "Neuer Tab",
+  closeTab: "Tab schließen",
+  nextTab: "Nächster Tab",
+  prevTab: "Vorheriger Tab",
+  jumpTab: "Zu Tab 1–9 springen (Ziffer beliebig)",
+};
+
+/** Tab shortcuts: only while the window has focus, so no global registration and no clash with other apps. */
+function ShortcutSettings() {
+  const [keys, setKeys] = useState(loadShortcuts);
+  const [errors, setErrors] = useState<Partial<Record<keyof Shortcuts, string>>>({});
+  const apply = (next: Shortcuts) => (setKeys(next), saveShortcuts(next), setErrors({}));
+
+  function capture(name: keyof Shortcuts, e: React.KeyboardEvent) {
+    const plainTab = e.key === "Tab" && !(e.metaKey || e.ctrlKey || e.altKey); // keep keyboard navigation; Ctrl+Tab is recordable
+    if (plainTab || e.key === "Escape") return; // Esc closes the dialog
+    e.preventDefault();
+    const acc = keydownToAccelerator(e.nativeEvent);
+    if (!acc) return;
+    if (name === "jumpTab" && !/\+\d$/.test(acc)) return setErrors({ [name]: "Eine Ziffer mit Modifier drücken, z. B. Strg+1" });
+    const other = (Object.keys(keys) as (keyof Shortcuts)[]).find((o) => o !== name && keys[o] === acc);
+    if (other) return setErrors({ [name]: `Schon belegt: ${SHORTCUT_LABELS[other]}` });
+    apply({ ...keys, [name]: acc });
+  }
+
   return (
     <fieldset>
       <legend>Tastenkürzel (im Fenster)</legend>
-      <label>
-        <span>Neuer Tab</span>
-        <input
-          readOnly
-          data-shortcut-capture
-          value={key}
-          placeholder="Kombination drücken"
-          onKeyDown={(e) => {
-            if (e.key === "Tab" || e.key === "Escape") return; // keep keyboard navigation and Esc-to-close
-            e.preventDefault();
-            const acc = keydownToAccelerator(e.nativeEvent);
-            if (acc) set(acc);
-          }}
-        />
-      </label>
-      <button type="button" onClick={() => set(DEFAULT_NEW_TAB_KEY)}>Standard</button>
+      {(Object.keys(SHORTCUT_LABELS) as (keyof Shortcuts)[]).map((name) => (
+        <div key={name} data-shortcut={name}>
+          <label>
+            <span>{SHORTCUT_LABELS[name]}</span>
+            <input readOnly data-shortcut-capture value={keys[name]} placeholder="Kombination drücken" aria-invalid={!!errors[name]} onKeyDown={(e) => capture(name, e)} />
+          </label>
+          {errors[name] && <p role="alert">{errors[name]}</p>}
+        </div>
+      ))}
+      <button type="button" onClick={() => apply(DEFAULT_SHORTCUTS)}>Standard</button>
     </fieldset>
   );
 }

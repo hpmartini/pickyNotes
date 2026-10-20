@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Duration;
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 
@@ -433,6 +433,25 @@ fn show_main_window(app: AppHandle) {
 
 pub fn run() {
     tauri::Builder::default()
+        // Not the default menu: its "Close Window" (Cmd+W) would hide the window before the webview sees the key, and Cmd+W closes a tab here.
+        .menu(|h| {
+            let edit = Submenu::with_items(
+                h,
+                "Bearbeiten",
+                true,
+                &[
+                    &PredefinedMenuItem::undo(h, None)?,
+                    &PredefinedMenuItem::redo(h, None)?,
+                    &PredefinedMenuItem::separator(h)?,
+                    &PredefinedMenuItem::cut(h, None)?,
+                    &PredefinedMenuItem::copy(h, None)?,
+                    &PredefinedMenuItem::paste(h, None)?,
+                    &PredefinedMenuItem::select_all(h, None)?,
+                ],
+            )?;
+            let app = Submenu::with_items(h, "pickyNotes", true, &[&PredefinedMenuItem::hide(h, None)?, &PredefinedMenuItem::quit(h, None)?])?;
+            Menu::with_items(h, &[&app, &edit])
+        })
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .invoke_handler(tauri::generate_handler![keychain_get, keychain_set, screenshot, whisperstorm, set_dock_visible, set_tray_visible, show_main_window, outbox_write, outbox_list, outbox_delete, outbox_reveal, drafts_write, drafts_list, drafts_delete, set_corner_radius])
         .on_window_event(|window, event| {

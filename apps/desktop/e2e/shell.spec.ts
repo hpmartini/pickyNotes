@@ -123,14 +123,58 @@ test.describe("settings modal", () => {
     await expect(page.getByRole("tab")).toHaveCount(2);
     await page.keyboard.press("Control+,");
     await expect(dialog(page)).toBeVisible();
-    await dialog(page).getByLabel("Neuer Tab").focus();
+    await dialog(page).locator("[data-shortcut=newTab] input").focus();
     await page.keyboard.press("Control+Alt+j");
-    await expect(dialog(page).getByLabel("Neuer Tab")).toHaveValue("Control+Alt+J");
+    await expect(dialog(page).locator("[data-shortcut=newTab] input")).toHaveValue("Control+Alt+J");
     await page.keyboard.press("Escape");
     await page.keyboard.press("Meta+t");
     await expect(page.getByRole("tab")).toHaveCount(2);
     await page.keyboard.press("Control+Alt+j");
     await expect(page.getByRole("tab")).toHaveCount(3);
+  });
+
+  test("Cmd+W closes the tab, Ctrl+Tab / Ctrl+Shift+Tab cycle, Ctrl+1..9 jump; all are rebindable", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.getByRole("tab")).toHaveCount(1);
+    await page.keyboard.press("Meta+t");
+    await page.keyboard.press("Meta+t");
+    await expect(page.getByRole("tab")).toHaveCount(3);
+    const selected = page.getByRole("tab", { selected: true });
+    const index = async () => (await page.getByRole("tab").evaluateAll((els) => els.findIndex((e) => e.getAttribute("aria-selected") === "true")));
+    expect(await index()).toBe(2);
+    await page.keyboard.press("Control+Tab"); // wraps to the first
+    await expect.poll(index).toBe(0);
+    await page.keyboard.press("Control+Shift+Tab"); // and back to the last
+    await expect.poll(index).toBe(2);
+    await page.keyboard.press("Control+2");
+    await expect.poll(index).toBe(1);
+    await page.keyboard.press("Control+9"); // no ninth tab: nothing changes
+    await expect.poll(index).toBe(1);
+    await page.keyboard.press("Meta+w");
+    await expect(page.getByRole("tab")).toHaveCount(2);
+    await expect(selected).toHaveCount(1);
+
+    await page.keyboard.press("Control+,");
+    await expect(dialog(page)).toBeVisible();
+    const field = dialog(page).locator("[data-shortcut=closeTab] input");
+    await field.focus();
+    await page.keyboard.press("Control+Alt+x");
+    await expect(field).toHaveValue("Control+Alt+X");
+    const jump = dialog(page).locator("[data-shortcut=jumpTab] input");
+    await jump.focus();
+    await page.keyboard.press("Alt+j"); // no digit: rejected
+    await expect(dialog(page).getByRole("alert")).toBeVisible();
+    await page.keyboard.press("Alt+1");
+    await expect(jump).toHaveValue("Alt+1");
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("Meta+w"); // old binding is gone
+    await expect(page.getByRole("tab")).toHaveCount(2);
+    await page.keyboard.press("Alt+2");
+    await expect.poll(index).toBe(1);
+    await page.keyboard.press("Alt+1");
+    await expect.poll(index).toBe(0);
+    await page.keyboard.press("Control+Alt+x");
+    await expect(page.getByRole("tab")).toHaveCount(1);
   });
 
   test("a rejected hotkey shows an error and keeps the previous one; a bare key is ignored", async ({ page }) => {

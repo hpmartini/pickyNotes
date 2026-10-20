@@ -1,9 +1,9 @@
 import { createClient, type PickyClient } from "@pickynotes/shared";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CaptureView } from "./CaptureView";
-import { addNote, closeNote, loadNotes, newNote, noteTitle, saveNotes, setNoteText } from "./lib/notes";
+import { addNote, closeNote, jumpNote, loadNotes, newNote, noteTitle, saveNotes, setNoteText, stepNote, type NotesState } from "./lib/notes";
 import { CaptureQueue } from "./lib/queue";
-import { keydownToAccelerator, loadHotkeys, loadNewTabKey, loadTextWidth, saveTextWidth } from "./lib/settings";
+import { jumpIndex, keydownToAccelerator, loadHotkeys, loadShortcuts, loadTextWidth, saveTextWidth } from "./lib/settings";
 import { applyHotkeys, inTauri, revealOutbox, screenshot, setCornerRadius, tauriDrafts, tauriOutbox, token } from "./lib/tauri";
 import { createDraftSaver, restoreDrafts } from "./lib/drafts";
 import { SearchView } from "./SearchView";
@@ -82,11 +82,20 @@ export function App() {
     window.addEventListener("picky:open-search", onOpenSearch);
     // Capture phase: CodeMirror's mac keymap binds Ctrl-n and would swallow it while the editor has focus.
     const onKey = (e: KeyboardEvent) => {
-      const newTab = keydownToAccelerator(e) === loadNewTabKey(); // configurable, may include Shift/Alt
-      if (!newTab && (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey)) return;
-      if (modalOpenRef.current) return newTab || e.key.toLowerCase() === "n" ? e.preventDefault() : undefined; // modal: no background actions
+      const acc = keydownToAccelerator(e);
+      const keys = loadShortcuts(); // configurable, may include Shift/Alt
+      const jump = jumpIndex(acc, keys.jumpTab);
+      const tabAction =
+        acc === keys.newTab ? addNote
+        : acc === keys.closeTab ? (s: NotesState) => closeNote(s, s.active)
+        : acc === keys.nextTab ? (s: NotesState) => stepNote(s, 1)
+        : acc === keys.prevTab ? (s: NotesState) => stepNote(s, -1)
+        : jump !== null ? (s: NotesState) => jumpNote(s, jump)
+        : null;
+      if (!tabAction && (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey)) return;
+      if (modalOpenRef.current) return tabAction || e.key.toLowerCase() === "n" ? e.preventDefault() : undefined; // modal: no background actions
       if ((e.target as Element | null)?.closest?.("[data-shortcut-capture]")) return; // recording a hotkey, not using one
-      if (newTab) return (e.preventDefault(), setNotes(addNote));
+      if (tabAction) return (e.preventDefault(), setNotes(tabAction));
       if (e.key === ",") (e.preventDefault(), setSettingsOpen(true));
       else if (e.key.toLowerCase() === "n") (e.preventDefault(), setNotes(addNote));
       else if (e.key.toLowerCase() === "k") (e.preventDefault(), openSearch());

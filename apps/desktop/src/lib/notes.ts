@@ -36,6 +36,18 @@ export function closeNote(s: NotesState, id: string): NotesState {
   return { active: s.active === id ? notes[Math.min(i, notes.length - 1)]!.id : s.active, notes };
 }
 
+/** Activates the tab `delta` places away, wrapping around. */
+export function stepNote(s: NotesState, delta: number): NotesState {
+  const i = s.notes.findIndex((n) => n.id === s.active);
+  return { ...s, active: s.notes[(Math.max(i, 0) + delta + s.notes.length) % s.notes.length]!.id };
+}
+
+/** Activates the tab at `index` (0-based); out of range changes nothing. */
+export function jumpNote(s: NotesState, index: number): NotesState {
+  const n = s.notes[index];
+  return n ? { ...s, active: n.id } : s;
+}
+
 /** Returns whether the write succeeded; on failure the notes stay in memory only. */
 export function saveNotes(s: NotesState): boolean {
   try {

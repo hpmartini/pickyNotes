@@ -1,7 +1,26 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { activeNote, addNote, closeNote, loadNotes, noteTitle, saveNotes, setNoteText } from "./notes";
+import { activeNote, addNote, closeNote, jumpNote, loadNotes, noteTitle, saveNotes, setNoteText, stepNote } from "./notes";
+import { jumpIndex } from "./settings";
 
 afterEach(() => localStorage.clear());
+
+describe("tab navigation", () => {
+  const three = addNote(addNote(addNote({ active: "", notes: [] })));
+  const at = (s: typeof three) => s.notes.findIndex((n) => n.id === s.active);
+  it("steps with wrap-around and jumps; out of range changes nothing", () => {
+    expect(at(three)).toBe(2);
+    expect(at(stepNote(three, 1))).toBe(0);
+    expect(at(stepNote(jumpNote(three, 0), -1))).toBe(2);
+    expect(at(jumpNote(three, 1))).toBe(1);
+    expect(jumpNote(three, 5)).toBe(three);
+  });
+  it("maps modifier plus digit to a tab index under the configured prefix", () => {
+    expect(jumpIndex("Control+3", "Control+1")).toBe(2);
+    expect(jumpIndex("Control+0", "Control+1")).toBeNull();
+    expect(jumpIndex("Alt+3", "Control+1")).toBeNull();
+    expect(jumpIndex("Control+Shift+3", "Control+1")).toBeNull();
+  });
+});
 
 describe("notes", () => {
   it("migrates the legacy draft into the first note and removes the old key", () => {
