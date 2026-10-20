@@ -1,50 +1,21 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
+import { Dialog } from "./Dialog";
 import { clampTextWidth, DEFAULT_HOTKEYS, keydownToAccelerator, loadHotkeys, loadShell, saveHotkeys, saveShell, TEXT_WIDTH, type Hotkeys, type ShellPrefs } from "./lib/settings";
 import { applyHotkeys, setDockVisible, setTrayVisible, token, type HotkeyErrors } from "./lib/tauri";
 
 export const URL_KEY = "picky.url";
 
-/** Keeps Tab inside the dialog: wraps from the last control to the first and back. */
-function trapTab(e: React.KeyboardEvent<HTMLDivElement>) {
-  if (e.key !== "Tab") return;
-  const items = [...e.currentTarget.querySelectorAll<HTMLElement>("button, input, [tabindex]")].filter((el) => !(el as HTMLButtonElement).disabled && el.tabIndex >= 0);
-  const edge = items[e.shiftKey ? 0 : items.length - 1];
-  if (document.activeElement === edge || document.activeElement === e.currentTarget) {
-    e.preventDefault();
-    items[e.shiftKey ? items.length - 1 : 0]?.focus();
-  }
-}
-
 const HOTKEY_LABELS: Record<keyof Hotkeys, string> = { dictation: "Diktat starten/stoppen", toggle: "App ein-/ausblenden", search: "Suche öffnen" };
 
 /** Modal dialog opened with Cmd/Ctrl+, : server connection, global hotkeys, Dock and menu-bar icon. */
 export function SettingsModal({ onClose, textWidth, onTextWidth }: { onClose: () => void; textWidth: number | null; onTextWidth: (px: number | null) => void }) {
-  const dialog = useRef<HTMLDivElement>(null);
-  // once: onClose changes identity on every App render and must not steal focus again
-  useEffect(() => {
-    const opener = document.activeElement as HTMLElement | null;
-    dialog.current?.focus();
-    return () => opener?.focus();
-  }, []);
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
   return (
-    <div className="backdrop" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div ref={dialog} role="dialog" aria-modal="true" aria-labelledby="settings-title" tabIndex={-1} className="dialog" onKeyDown={trapTab}>
-        <header>
-          <h2 id="settings-title">Einstellungen</h2>
-          <button onClick={onClose} aria-label="Einstellungen schließen">×</button>
-        </header>
-        <ServerForm />
-        <HotkeySettings />
-        <TextWidthSettings width={textWidth} onChange={onTextWidth} />
-        <ShellSettings />
-      </div>
-    </div>
+    <Dialog title="Einstellungen" closeLabel="Einstellungen schließen" onClose={onClose}>
+      <ServerForm />
+      <HotkeySettings />
+      <TextWidthSettings width={textWidth} onChange={onTextWidth} />
+      <ShellSettings />
+    </Dialog>
   );
 }
 

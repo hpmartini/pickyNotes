@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { DraftStore } from "./drafts";
 import type { Outbox } from "./queue";
 import type { HotkeyConfig, Hotkeys } from "./settings";
 
@@ -33,6 +34,27 @@ export const tauriOutbox = (): Outbox | undefined =>
           }),
       }
     : undefined;
+
+/** File copy of every open note in the app data dir (Rust `drafts_*`). Undefined in the browser dev server; files that do not parse are skipped, not deleted. */
+export const tauriDrafts = (): DraftStore | undefined =>
+  inTauri()
+    ? {
+        write: (id, text) => invoke("drafts_write", { id, json: JSON.stringify({ id, text }) }),
+        remove: (id) => invoke("drafts_delete", { id }),
+        list: async () =>
+          (await invoke<string[]>("drafts_list")).flatMap((raw) => {
+            try {
+              const d = JSON.parse(raw);
+              return typeof d?.id === "string" && typeof d?.text === "string" ? [{ id: d.id, text: d.text }] : [];
+            } catch {
+              return [];
+            }
+          }),
+      }
+    : undefined;
+
+/** Hands the window corner radius (CSS `--window-radius`, px) to Rust, which clips the native window with it. */
+export const setCornerRadius = (px: number): Promise<void> => (inTauri() && Number.isFinite(px) ? invoke("set_corner_radius", { px }) : Promise.resolve());
 
 /** Shows the outbox folder in Finder. */
 export const revealOutbox = (): Promise<void> => invoke("outbox_reveal");

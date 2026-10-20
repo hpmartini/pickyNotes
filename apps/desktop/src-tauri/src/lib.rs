@@ -169,6 +169,26 @@ fn outbox_reveal(app: AppHandle) -> Result<(), String> {
     if status.success() { Ok(()) } else { Err(format!("open: {status}")) }
 }
 
+/// Second on-disk copy of every open note (one `<id>.json` per note id): same helpers and guarantees as the outbox (id whitelist, 0600, temp+rename).
+fn drafts_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("drafts"))
+}
+
+#[tauri::command]
+fn drafts_write(app: AppHandle, id: String, json: String) -> Result<(), String> {
+    outbox_write_at(&drafts_dir(&app)?, &id, &json)
+}
+
+#[tauri::command]
+fn drafts_list(app: AppHandle) -> Result<Vec<String>, String> {
+    outbox_list_at(&drafts_dir(&app)?)
+}
+
+#[tauri::command]
+fn drafts_delete(app: AppHandle, id: String) -> Result<(), String> {
+    outbox_delete_at(&drafts_dir(&app)?, &id)
+}
+
 /// Dock / menu-bar choices. Rust reads them at launch (the webview is not up yet), so they live in a small JSON file, not localStorage.
 #[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Clone, Copy)]
 #[serde(default)]
@@ -312,6 +332,28 @@ fn overlay_behavior(current: objc2_app_kit::NSWindowCollectionBehavior) -> objc2
     (current - B::MoveToActiveSpace - B::FullScreenPrimary - B::FullScreenNone) | B::CanJoinAllSpaces | B::FullScreenAuxiliary
 }
 
+/// One step under NSFloatingWindowLevel: still above normal windows and fullscreen Spaces, but under WhisperStorm's overlay (floating level).
+#[cfg(target_os = "macos")]
+fn overlay_level() -> objc2_app_kit::NSWindowLevel {
+    objc2_app_kit::NSFloatingWindowLevel - 1
+}
+
+const DEFAULT_CORNER_RADIUS: u32 = 12;
+static CORNER_RADIUS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(DEFAULT_CORNER_RADIUS);
+
+/// The CSS `--window-radius` arrives from the webview: NaN falls back to the default, the rest is clamped to 0..=32 px.
+fn clamp_radius(px: f64) -> u32 {
+    if px.is_nan() { DEFAULT_CORNER_RADIUS } else { px.clamp(0.0, 32.0).round() as u32 }
+}
+
+#[tauri::command]
+fn set_corner_radius(app: AppHandle, px: f64) {
+    CORNER_RADIUS.store(clamp_radius(px), std::sync::atomic::Ordering::Relaxed);
+    if let Some(w) = app.get_webview_window("main") {
+        prepare_overlay(&w);
+    }
+}
+
 /// Turns tao's NSWindow into a non-activating NSPanel in place. A plain NSWindow of a Regular (Dock) app is not shown over another app's
 /// fullscreen Space even with FullScreenAuxiliary (measured: Accessory window shows, Regular window does not, Regular NSPanel does).
 /// NSPanel and NSWindow have the same instance size (520 bytes), so swapping the class of the live object is safe; the new class keeps
@@ -353,18 +395,29 @@ fn make_panel(ns: &objc2_app_kit::NSWindow) -> &objc2_app_kit::NSPanel {
 fn prepare_overlay(window: &tauri::WebviewWindow) {
     #[cfg(target_os = "macos")]
     {
-        use objc2_app_kit::{NSFloatingWindowLevel, NSWindow};
+        use objc2_app_kit::{NSColor, NSWindow};
         let w = window.clone();
         let _ = window.run_on_main_thread(move || {
             if let Ok(ptr) = w.ns_window() {
                 // SAFETY: ns_window() is the live NSWindow of this webview window and we are on the main thread.
                 let ns = unsafe { &*(ptr as *const NSWindow) };
                 let panel = make_panel(ns);
-                panel.setFloatingPanel(true);
+                panel.setFloatingPanel(true); // writes the floating level itself, so setLevel below has to come after it
                 panel.setHidesOnDeactivate(false);
                 panel.setBecomesKeyOnlyIfNeeded(false);
                 ns.setCollectionBehavior(overlay_behavior(ns.collectionBehavior()));
-                ns.setLevel(NSFloatingWindowLevel);
+                ns.setLevel(overlay_level());
+                // Rounded corners without private API: transparent window, content view clipped by its layer; the opaque WKWebView sits inside the clip.
+                ns.setOpaque(false);
+                ns.setBackgroundColor(Some(&NSColor::clearColor()));
+                if let Some(view) = ns.contentView() {
+                    view.setWantsLayer(true);
+                    if let Some(layer) = view.layer() {
+                        layer.setCornerRadius(CORNER_RADIUS.load(std::sync::atomic::Ordering::Relaxed) as f64);
+                        layer.setMasksToBounds(true);
+                    }
+                }
+                ns.invalidateShadow();
             }
         });
     }
@@ -381,7 +434,7 @@ fn show_main_window(app: AppHandle) {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![keychain_get, keychain_set, screenshot, whisperstorm, set_dock_visible, set_tray_visible, show_main_window, outbox_write, outbox_list, outbox_delete, outbox_reveal])
+        .invoke_handler(tauri::generate_handler![keychain_get, keychain_set, screenshot, whisperstorm, set_dock_visible, set_tray_visible, show_main_window, outbox_write, outbox_list, outbox_delete, outbox_reveal, drafts_write, drafts_list, drafts_delete, set_corner_radius])
         .on_window_event(|window, event| {
             // Keep running in the background so the global hotkey can bring the window back.
             if let WindowEvent::CloseRequested { api, .. } = event {
@@ -536,6 +589,38 @@ mod tests {
         let dir = temp_dir("none");
         assert!(outbox_list_at(&dir).unwrap().is_empty());
         assert!(outbox_delete_at(&dir, "nope").is_ok());
+    }
+
+    #[test]
+    fn drafts_keep_the_outbox_guarantees_in_their_own_folder() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("drafts").join("drafts");
+        outbox_write_at(&dir, "note-1", r#"{"id":"note-1","text":"a"}"#).unwrap();
+        outbox_write_at(&dir, "note-1", r#"{"id":"note-1","text":"ab"}"#).unwrap();
+        assert_eq!(outbox_list_at(&dir).unwrap(), vec![r#"{"id":"note-1","text":"ab"}"#.to_string()]);
+        assert_eq!(std::fs::metadata(dir.join("note-1.json")).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "no .tmp leftover");
+        assert!(outbox_write_at(&dir, "../x", "{}").is_err());
+        outbox_delete_at(&dir, "note-1").unwrap();
+        assert!(outbox_list_at(&dir).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    #[test]
+    fn corner_radius_is_clamped_and_nan_falls_back() {
+        assert_eq!(clamp_radius(12.4), 12);
+        assert_eq!(clamp_radius(-5.0), 0);
+        assert_eq!(clamp_radius(999.0), 32);
+        assert_eq!(clamp_radius(f64::NAN), DEFAULT_CORNER_RADIUS);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn overlay_level_is_one_under_the_floating_level_and_above_normal_windows() {
+        use objc2_app_kit::{NSFloatingWindowLevel, NSNormalWindowLevel};
+        assert_eq!(overlay_level(), NSFloatingWindowLevel - 1);
+        assert_eq!(overlay_level(), 2);
+        assert!(NSNormalWindowLevel < overlay_level());
     }
 
     #[cfg(target_os = "macos")]
