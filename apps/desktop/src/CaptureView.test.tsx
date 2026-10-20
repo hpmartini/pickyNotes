@@ -491,6 +491,16 @@ describe("App shell", () => {
     expect(screen.getAllByRole("search")).toHaveLength(1);
   });
 
+  it("global hotkey events do nothing behind a modal", () => {
+    render(<App />);
+    fireEvent.keyDown(window, { key: ",", ctrlKey: true });
+    act(() => void window.dispatchEvent(new CustomEvent("picky:open-search")));
+    act(() => void window.dispatchEvent(new CustomEvent("picky:focus-capture", { detail: { toggle: true } })));
+    expect(screen.queryByRole("search", { hidden: true })).toBeNull();
+    expect(ws.calls).toEqual([]);
+    expect(screen.getByRole("dialog", { name: "Einstellungen" })).toBeTruthy();
+  });
+
   describe("Ausstehend badge and modal", () => {
     /** App's own queue (same IndexedDB name); emptied again so other tests start clean. */
     const appQueue = () => new CaptureQueue("pickynotes-queue");
@@ -526,6 +536,19 @@ describe("App shell", () => {
       fireEvent.keyDown(window, { key: "Escape" });
       expect(screen.queryByRole("dialog")).toBeNull();
       expect(document.querySelector(".topbar")!.hasAttribute("inert")).toBe(false);
+    });
+
+    it("global hotkey events do nothing behind the Ausstehend modal", async () => {
+      const q = appQueue();
+      await q.enqueue({ kind: "text", source: "typed", text: "wartet" });
+      await q.flush(async () => Promise.reject(new TypeError("offline")));
+      render(<App />);
+      fireEvent.click(await screen.findByRole("button", { name: "Ausstehend: 1" }));
+      act(() => void window.dispatchEvent(new CustomEvent("picky:open-search")));
+      act(() => void window.dispatchEvent(new CustomEvent("picky:focus-capture", { detail: { toggle: true } })));
+      expect(screen.queryByRole("search", { hidden: true })).toBeNull();
+      expect(ws.calls).toEqual([]);
+      expect(screen.getByRole("dialog", { name: "Ausstehend" })).toBeTruthy();
     });
 
     it("discarding the last item closes the modal and removes the badge; the old bottom panels are gone", async () => {

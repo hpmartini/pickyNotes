@@ -91,4 +91,67 @@ describe("createDraftSaver", () => {
     expect(warn).toHaveBeenCalledOnce();
     warn.mockRestore();
   });
+
+  describe("failed operations are kept and retried", () => {
+    let warn: ReturnType<typeof vi.spyOn>;
+    beforeEach(() => void (warn = vi.spyOn(console, "warn").mockImplementation(() => {})));
+    afterEach(() => warn.mockRestore());
+
+    it("a failed write is written again by the next flush, without any new text", async () => {
+      store.write.mockRejectedValueOnce(new Error("disk full"));
+      const s = createDraftSaver(store, 500);
+      s.update([n("a", "x")]);
+      await s.flush();
+      await s.flush();
+      expect(store.write.mock.calls).toEqual([["a", "x"], ["a", "x"]]);
+      await s.flush();
+      expect(store.write).toHaveBeenCalledTimes(2); // done now
+    });
+
+    it("an update without a text change retries a failed write after the debounce", async () => {
+      store.write.mockRejectedValueOnce(new Error("disk full"));
+      const s = createDraftSaver(store, 500);
+      const notes = [n("a", "x")];
+      s.update(notes);
+      await s.flush();
+      s.update(notes);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(store.write).toHaveBeenCalledTimes(2);
+    });
+
+    it("closing a note after a failed write: the delete comes last and the write is not retried behind it", async () => {
+      store.write.mockRejectedValueOnce(new Error("disk full"));
+      const s = createDraftSaver(store, 500);
+      s.update([n("a", "x")]);
+      await s.flush();
+      s.update([]);
+      await s.flush();
+      await s.flush();
+      expect(store.write).toHaveBeenCalledTimes(1);
+      expect(store.remove.mock.calls).toEqual([["a"]]);
+    });
+
+    it("a failed delete is retried by the next flush", async () => {
+      store.remove.mockRejectedValueOnce(new Error("busy"));
+      const s = createDraftSaver(store, 500);
+      s.update([n("a", "x")]);
+      await s.flush();
+      s.update([]);
+      await s.flush();
+      await s.flush();
+      expect(store.remove.mock.calls).toEqual([["a"], ["a"]]);
+    });
+
+    it("a failed write holds back later operations until it succeeded", async () => {
+      store.write.mockRejectedValueOnce(new Error("disk full"));
+      const s = createDraftSaver(store, 500);
+      s.update([n("a", "x"), n("b", "y")]);
+      await s.flush();
+      s.update([n("a", "x")]); // b closed while a's write is still failing
+      await s.flush();
+      const ordered = (m: typeof store.write | typeof store.remove, tag: string) => m.mock.calls.map((c: unknown[], i) => [m.mock.invocationCallOrder[i]!, `${tag}${c[0]}`] as const);
+      const calls = [...ordered(store.write, "w"), ...ordered(store.remove, "d")];
+      expect(calls.sort((x, y) => x[0] - y[0]).map((c) => c[1])).toEqual(["wa", "wa", "db"]);
+    });
+  });
 });

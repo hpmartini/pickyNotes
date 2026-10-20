@@ -74,11 +74,12 @@ export function App() {
   useEffect(() => {
     void applyHotkeys(null, loadHotkeys()).then(({ errors }) => Object.keys(errors).length && console.warn("Hotkeys nicht registriert:", errors));
     // Here, not in CaptureView: only App can close the search panel. CaptureView stays mounted so a running recording survives tab switches.
-    const onHotkey = (e: Event) => (setSearchOpen(false), setHotkey({ toggle: !!(e as CustomEvent).detail?.toggle }));
+    const onHotkey = (e: Event) => modalOpenRef.current || (setSearchOpen(false), setHotkey({ toggle: !!(e as CustomEvent).detail?.toggle }));
     window.addEventListener("picky:focus-capture", onHotkey);
     // Already open: just put the cursor back into its input (a fresh mount focuses it itself).
     const openSearch = () => (searchOpenRef.current ? document.querySelector<HTMLInputElement>('[role="search"] input')?.focus() : setSearchOpen(true));
-    window.addEventListener("picky:open-search", openSearch);
+    const onOpenSearch = () => modalOpenRef.current || openSearch(); // global shortcut behind a modal: ignore
+    window.addEventListener("picky:open-search", onOpenSearch);
     // Capture phase: CodeMirror's mac keymap binds Ctrl-n and would swallow it while the editor has focus.
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
@@ -97,7 +98,7 @@ export function App() {
     const unlisten = inTauri() ? import("@tauri-apps/api/event").then((m) => m.listen("picky:open-settings", () => (setPendingOpen(false), setSettingsOpen(true)))) : undefined;
     return () => {
       window.removeEventListener("picky:focus-capture", onHotkey);
-      window.removeEventListener("picky:open-search", openSearch);
+      window.removeEventListener("picky:open-search", onOpenSearch);
       window.removeEventListener("keydown", onKey, true);
       window.removeEventListener("online", flush);
       clearInterval(timer);
