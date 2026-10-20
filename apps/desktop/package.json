@@ -9,7 +9,8 @@
     "tauri": "tauri",
     "typecheck": "tsc -p .",
     "test": "vitest run",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "screenshots": "playwright test -c playwright.screenshots.config.ts"
   },
   "dependencies": {
     "@atomic-editor/editor": "^0.6.2",
