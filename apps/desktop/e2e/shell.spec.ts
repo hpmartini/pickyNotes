@@ -116,6 +116,23 @@ test.describe("settings modal", () => {
     await expect(page.getByRole("tab")).toHaveCount(1);
   });
 
+  test("Cmd+T opens a new tab by default; the combination can be changed in the settings", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.getByRole("tab")).toHaveCount(1); // mounted, shortcut listener attached
+    await page.keyboard.press("Meta+t");
+    await expect(page.getByRole("tab")).toHaveCount(2);
+    await page.keyboard.press("Control+,");
+    await expect(dialog(page)).toBeVisible();
+    await dialog(page).getByLabel("Neuer Tab").focus();
+    await page.keyboard.press("Control+Alt+j");
+    await expect(dialog(page).getByLabel("Neuer Tab")).toHaveValue("Control+Alt+J");
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("Meta+t");
+    await expect(page.getByRole("tab")).toHaveCount(2);
+    await page.keyboard.press("Control+Alt+j");
+    await expect(page.getByRole("tab")).toHaveCount(3);
+  });
+
   test("a rejected hotkey shows an error and keeps the previous one; a bare key is ignored", async ({ page }) => {
     await mockTauri(page, NO_WS);
     await page.addInitScript(() => Object.assign(window, { __failRegister: "Control+Alt+K" }));

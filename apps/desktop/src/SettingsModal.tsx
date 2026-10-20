@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Dialog } from "./Dialog";
-import { clampTextWidth, DEFAULT_HOTKEYS, keydownToAccelerator, loadHotkeys, loadShell, saveHotkeys, saveShell, TEXT_WIDTH, type Hotkeys, type ShellPrefs } from "./lib/settings";
+import { clampTextWidth, DEFAULT_HOTKEYS, DEFAULT_NEW_TAB_KEY, keydownToAccelerator, loadHotkeys, loadNewTabKey, loadShell, saveHotkeys, saveNewTabKey, saveShell, TEXT_WIDTH, type Hotkeys, type ShellPrefs } from "./lib/settings";
 import { applyHotkeys, setDockVisible, setTrayVisible, token, type HotkeyErrors } from "./lib/tauri";
 
 export const URL_KEY = "picky.url";
@@ -13,9 +13,37 @@ export function SettingsModal({ onClose, textWidth, onTextWidth }: { onClose: ()
     <Dialog title="Einstellungen" closeLabel="Einstellungen schließen" onClose={onClose}>
       <ServerForm />
       <HotkeySettings />
+      <NewTabSetting />
       <TextWidthSettings width={textWidth} onChange={onTextWidth} />
       <ShellSettings />
     </Dialog>
+  );
+}
+
+/** Neuer-Tab shortcut: only while the window has focus, so no global registration and no clash with other apps. */
+function NewTabSetting() {
+  const [key, setKey] = useState(loadNewTabKey);
+  const set = (k: string) => (setKey(k), saveNewTabKey(k));
+  return (
+    <fieldset>
+      <legend>Tastenkürzel (im Fenster)</legend>
+      <label>
+        <span>Neuer Tab</span>
+        <input
+          readOnly
+          data-shortcut-capture
+          value={key}
+          placeholder="Kombination drücken"
+          onKeyDown={(e) => {
+            if (e.key === "Tab" || e.key === "Escape") return; // keep keyboard navigation and Esc-to-close
+            e.preventDefault();
+            const acc = keydownToAccelerator(e.nativeEvent);
+            if (acc) set(acc);
+          }}
+        />
+      </label>
+      <button type="button" onClick={() => set(DEFAULT_NEW_TAB_KEY)}>Standard</button>
+    </fieldset>
   );
 }
 

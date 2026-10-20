@@ -13,7 +13,7 @@ A capture-first note app for people who think faster than they file. Jot a thoug
 
 - **Fast capture:** a floating, frameless macOS window that also appears over fullscreen apps. Global hotkeys show or hide it, start dictation, or jump to search. Everything is configurable (`Cmd+,`) and can be switched off.
 - **Live-preview Markdown editor** (Atomic Editor on CodeMirror 6): headings, lists, task lists, tables, code with highlighting, footnotes, images and file attachments by paste or drag and drop.
-- **Note tabs:** `Cmd+N` opens a new note, drafts survive restarts.
+- **Note tabs:** `Cmd+T` (configurable in Settings) or `Cmd+N` opens a new note, drafts survive restarts.
 - **Saving never loses a note:** every capture is stored twice (IndexedDB queue plus a plain-file outbox) before the tab closes, open drafts are mirrored to disk, and anything not yet delivered is listed under **Ausstehend** (badge in the top bar).
 - **Dictation:** talks to WhisperStorm (the author's separate macOS dictation app, not public) over a local Unix socket; transcripts land at the cursor. Without it the STT button just reports that it is not running.
 - **Vault is the truth:** new notes become `raw/<id>.md` and are never overwritten; Postgres only holds a rebuildable index. A curator may only touch front matter and two marked blocks.

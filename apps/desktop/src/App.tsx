@@ -3,7 +3,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { CaptureView } from "./CaptureView";
 import { addNote, closeNote, loadNotes, newNote, noteTitle, saveNotes, setNoteText } from "./lib/notes";
 import { CaptureQueue } from "./lib/queue";
-import { loadHotkeys, loadTextWidth, saveTextWidth } from "./lib/settings";
+import { keydownToAccelerator, loadHotkeys, loadNewTabKey, loadTextWidth, saveTextWidth } from "./lib/settings";
 import { applyHotkeys, inTauri, revealOutbox, screenshot, setCornerRadius, tauriDrafts, tauriOutbox, token } from "./lib/tauri";
 import { createDraftSaver, restoreDrafts } from "./lib/drafts";
 import { SearchView } from "./SearchView";
@@ -82,9 +82,11 @@ export function App() {
     window.addEventListener("picky:open-search", onOpenSearch);
     // Capture phase: CodeMirror's mac keymap binds Ctrl-n and would swallow it while the editor has focus.
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
-      if (modalOpenRef.current) return e.key.toLowerCase() === "n" ? e.preventDefault() : undefined; // modal: no background actions
+      const newTab = keydownToAccelerator(e) === loadNewTabKey(); // configurable, may include Shift/Alt
+      if (!newTab && (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey)) return;
+      if (modalOpenRef.current) return newTab || e.key.toLowerCase() === "n" ? e.preventDefault() : undefined; // modal: no background actions
       if ((e.target as Element | null)?.closest?.("[data-shortcut-capture]")) return; // recording a hotkey, not using one
+      if (newTab) return (e.preventDefault(), setNotes(addNote));
       if (e.key === ",") (e.preventDefault(), setSettingsOpen(true));
       else if (e.key.toLowerCase() === "n") (e.preventDefault(), setNotes(addNote));
       else if (e.key.toLowerCase() === "k") (e.preventDefault(), openSearch());
@@ -117,7 +119,7 @@ export function App() {
             </div>
           ))}
         </div>
-        <button className="icon" aria-label="Neue Notiz" title="Neue Notiz (Strg/Cmd+N)" onClick={() => setNotes(addNote)}>+</button>
+        <button className="icon" aria-label="Neue Notiz" title="Neue Notiz (Cmd+T / Cmd+N)" onClick={() => setNotes(addNote)}>+</button>
         <span className="spacer" data-tauri-drag-region />
         {pendingCount > 0 && (
           <button className="badge" aria-label={`Ausstehend: ${pendingCount}`} title="Ausstehende Notizen" onClick={() => setPendingOpen(true)}>{pendingCount}</button>

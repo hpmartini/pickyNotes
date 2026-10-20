@@ -19,6 +19,26 @@ export const DEFAULT_HOTKEYS: Hotkeys = {
   search: { key: "CommandOrControl+Shift+K", enabled: true },
 };
 
+/** In-window shortcut (only while pickyNotes has focus), unlike the global hotkeys above. Cmd+N keeps working as well. */
+export const DEFAULT_NEW_TAB_KEY = "Command+T";
+const NEW_TAB_KEY = "picky.newTabKey";
+
+export function loadNewTabKey(): string {
+  try {
+    return localStorage.getItem(NEW_TAB_KEY) || DEFAULT_NEW_TAB_KEY;
+  } catch {
+    return DEFAULT_NEW_TAB_KEY;
+  }
+}
+
+export function saveNewTabKey(key: string): void {
+  try {
+    localStorage.setItem(NEW_TAB_KEY, key);
+  } catch {
+    /* storage unavailable: applies for this session only */
+  }
+}
+
 const HOTKEYS_KEY = "picky.hotkeys";
 const SHELL_KEY = "picky.shell";
 const WIDTH_KEY = "picky.textWidth";
