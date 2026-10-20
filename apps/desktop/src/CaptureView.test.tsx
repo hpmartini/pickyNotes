@@ -2,7 +2,7 @@ import "fake-indexeddb/auto";
 import { ApiError } from "@pickynotes/shared";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { useState, type ComponentProps } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { CaptureView } from "./CaptureView";
 import { CaptureQueue, type Outbox, type QueuedCapture } from "./lib/queue";
@@ -34,9 +34,10 @@ vi.mock("@atomic-editor/editor", async () => {
 vi.mock("@atomic-editor/editor/styles.css", () => ({}));
 // whisperstorm falls through to the real browser fallback unless a test queues replies.
 const ws = vi.hoisted(() => ({ replies: [] as Array<Record<string, unknown>>, calls: [] as string[] }));
+const drafts = vi.hoisted(() => ({ store: undefined as import("./lib/drafts").DraftStore | undefined }));
 vi.mock("./lib/tauri", async (orig) => {
   const real = await orig<typeof import("./lib/tauri")>();
-  return { ...real, whisperstorm: (cmd: "start" | "stop" | "status") => (ws.calls.push(cmd), ws.replies.length ? Promise.resolve(ws.replies.shift()) : real.whisperstorm(cmd)) };
+  return { ...real, tauriDrafts: () => drafts.store, whisperstorm: (cmd: "start" | "stop" | "status") => (ws.calls.push(cmd), ws.replies.length ? Promise.resolve(ws.replies.shift()) : real.whisperstorm(cmd)) };
 });
 
 afterEach(() => (cleanup(), localStorage.clear(), (ws.calls.length = 0), (ws.replies.length = 0)));
@@ -45,7 +46,7 @@ let n = 0;
 /** CaptureView is controlled by App; this keeps one note in state like App does. */
 function Capture(p: Omit<ComponentProps<typeof CaptureView>, "notes" | "activeId" | "onChange" | "onSent">) {
   const [note, setNote] = useState({ id: "n1", text: "" });
-  return <CaptureView {...p} notes={[note]} activeId={note.id} onChange={(text) => setNote({ ...note, text })} onSent={() => setNote({ id: crypto.randomUUID(), text: "" })} />;
+  return <CaptureView pendingOpen {...p} notes={[note]} activeId={note.id} onChange={(text) => setNote({ ...note, text })} onSent={() => setNote({ id: crypto.randomUUID(), text: "" })} />;
 }
 
 describe("CaptureView", () => {
@@ -202,12 +203,12 @@ describe("CaptureView", () => {
     await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Abgelehnt: too big"));
     expect((screen.getByLabelText("Editor") as HTMLTextAreaElement).value).toBe("x");
     expect((await queue.list())[0]).toMatchObject({ rejected: "too big" });
-    const list = within(screen.getByRole("region", { name: "Abgelehnte Captures" }));
+    const list = within(screen.getByRole("region", { name: "Abgelehnt" }));
     expect(list.getByText(/too big/)).toBeTruthy();
 
     fireEvent.click(list.getByRole("button", { name: "Erneut senden" }));
     await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Gesendet"));
-    expect(screen.queryByRole("region", { name: "Abgelehnte Captures" })).toBeNull();
+    expect(screen.queryByRole("region", { name: "Abgelehnt" })).toBeNull();
     expect(await queue.list()).toEqual([]);
     expect(send.mock.calls[1]![0].clientId).toBe(send.mock.calls[0]![0].clientId); // same capture, same id, so the server can dedupe
 
@@ -217,7 +218,7 @@ describe("CaptureView", () => {
     cleanup();
     render(<Capture queue={bad} send={send} />);
     fireEvent.click(await screen.findByRole("button", { name: "Verwerfen" }));
-    await waitFor(() => expect(screen.queryByRole("region", { name: "Abgelehnte Captures" })).toBeNull());
+    await waitFor(() => expect(screen.queryByRole("region", { name: "Abgelehnt" })).toBeNull());
     expect(await bad.list()).toEqual([]);
   });
 
@@ -235,15 +236,15 @@ describe("CaptureView", () => {
       fireEvent.change(screen.getByLabelText("Editor"), { target: { value: text } });
       fireEvent.click(screen.getByRole("button", { name: "Speichern" }));
     };
-    const pendingList = () => within(screen.getByRole("region", { name: "Ausstehend" }));
+    const pendingList = () => within(screen.getByRole("region", { name: "Wartend" }));
 
-    it("offline: the note leaves the editor but sits visibly in Ausstehend (1), in both stores", async () => {
+    it("offline: the note leaves the editor but sits visibly in the Ausstehend list, in both stores", async () => {
       const { files, outbox } = fakeOutbox();
       const queue = new CaptureQueue(`c${n++}`, outbox);
       render(<Capture queue={queue} send={vi.fn().mockRejectedValue(new TypeError("offline"))} />);
       save("mein Gedanke");
       await waitFor(() => expect(screen.getByRole("status").textContent).toContain("Offline gepuffert"));
-      expect(screen.getByRole("heading", { name: "Ausstehend (1)" })).toBeTruthy();
+      expect(screen.getByRole("heading", { name: "Wartet auf Versand (1)" })).toBeTruthy();
       expect(pendingList().getByText(/mein Gedanke/)).toBeTruthy();
       expect((await queue.list()).map((i) => i.input.text)).toEqual(["mein Gedanke"]);
       expect([...files.values()].map((i) => i.input.text)).toEqual(["mein Gedanke"]);
@@ -323,7 +324,7 @@ describe("CaptureView", () => {
       render(<Capture queue={queue} send={vi.fn()} onOpenAsNote={onOpenAsNote} />);
       fireEvent.click(await screen.findByRole("button", { name: "Als Notiz öffnen" }));
       await waitFor(() => expect(onOpenAsNote).toHaveBeenCalledWith("zurück in den Editor"));
-      await waitFor(() => expect(screen.queryByRole("region", { name: "Ausstehend" })).toBeNull());
+      await waitFor(() => expect(screen.queryByRole("region", { name: "Wartend" })).toBeNull());
       expect(await queue.list()).toEqual([]);
       expect(files.size).toBe(0);
     });
@@ -348,10 +349,11 @@ describe("CaptureView", () => {
       const send = vi.fn(async () => ({ id: "1" }));
       const reveal = vi.fn();
       render(<Capture queue={queue} send={send} onRevealOutbox={reveal} />);
-      fireEvent.click(await screen.findByRole("button", { name: "Ordner zeigen" }));
+      await screen.findByRole("region", { name: "Wartend" });
+      fireEvent.click(screen.getByRole("button", { name: "Ordner zeigen" }));
       expect(reveal).toHaveBeenCalledTimes(1);
       fireEvent.click(pendingList().getByRole("button", { name: "Erneut senden" }));
-      await waitFor(() => expect(screen.queryByRole("region", { name: "Ausstehend" })).toBeNull());
+      await waitFor(() => expect(screen.queryByRole("region", { name: "Wartend" })).toBeNull());
       expect(send).toHaveBeenCalledTimes(1);
     });
 
@@ -359,9 +361,9 @@ describe("CaptureView", () => {
       const queue = new CaptureQueue(`c${n++}`);
       render(<Capture queue={queue} send={vi.fn()} />);
       await queue.enqueue({ kind: "text", source: "typed", text: "von außen" });
-      expect(await screen.findByRole("heading", { name: "Ausstehend (1)" })).toBeTruthy();
+      expect(await screen.findByRole("heading", { name: "Wartet auf Versand (1)" })).toBeTruthy();
       await queue.flush(async () => {});
-      await waitFor(() => expect(screen.queryByRole("region", { name: "Ausstehend" })).toBeNull());
+      await waitFor(() => expect(screen.queryByRole("region", { name: "Wartend" })).toBeNull());
     });
   });
 
@@ -487,6 +489,85 @@ describe("App shell", () => {
     expect(document.activeElement).toBe(screen.getByLabelText("Suchbegriff"));
     press();
     expect(screen.getAllByRole("search")).toHaveLength(1);
+  });
+
+  describe("Ausstehend badge and modal", () => {
+    /** App's own queue (same IndexedDB name); emptied again so other tests start clean. */
+    const appQueue = () => new CaptureQueue("pickynotes-queue");
+    afterEach(async () => {
+      const q = appQueue();
+      for (const i of await q.list()) await q.discard(i.key!);
+    });
+
+    it("no badge while nothing waits", async () => {
+      render(<App />);
+      await screen.findByRole("tab");
+      expect(screen.queryByRole("button", { name: /^Ausstehend/ })).toBeNull();
+    });
+
+    it("the badge counts waiting plus rejected captures and opens the modal; Esc closes it and the background is inert", async () => {
+      const q = appQueue();
+      await q.enqueue({ kind: "text", source: "typed", text: "abgelehnt" }); // first: an offline failure stops the flush, a rejection lets it go on
+      await q.enqueue({ kind: "text", source: "typed", text: "wartet" });
+      await q.flush(async (input) => (input.text === "abgelehnt" ? Promise.reject(new ApiError(413, "too big")) : Promise.reject(new TypeError("offline"))));
+      render(<App />);
+      const badge = await screen.findByRole("button", { name: "Ausstehend: 2" });
+      expect(badge.textContent).toBe("2");
+      expect(screen.queryByRole("dialog")).toBeNull();
+      fireEvent.click(badge);
+      const dialog = screen.getByRole("dialog", { name: "Ausstehend" });
+      expect(within(dialog).getByText(/wartet/)).toBeTruthy();
+      expect(within(dialog).getByText(/too big/)).toBeTruthy();
+      expect(within(dialog).getByRole("button", { name: "Verwerfen" })).toBeTruthy();
+      expect(document.querySelector(".topbar")!.hasAttribute("inert")).toBe(true);
+      expect(screen.getByRole("region", { name: "Erfassen", hidden: true }).hasAttribute("inert")).toBe(true);
+      fireEvent.keyDown(window, { key: "n", ctrlKey: true });
+      expect(screen.getAllByRole("tab", { hidden: true })).toHaveLength(1); // no background actions behind the modal
+      fireEvent.keyDown(window, { key: "Escape" });
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(document.querySelector(".topbar")!.hasAttribute("inert")).toBe(false);
+    });
+
+    it("discarding the last item closes the modal and removes the badge; the old bottom panels are gone", async () => {
+      const q = appQueue();
+      await q.enqueue({ kind: "text", source: "typed", text: "weg damit" });
+      await q.flush(async () => Promise.reject(new ApiError(400, "invalid")));
+      render(<App />);
+      expect(screen.queryByRole("region", { name: "Abgelehnt" })).toBeNull(); // not in the editor area
+      fireEvent.click(await screen.findByRole("button", { name: "Ausstehend: 1" }));
+      fireEvent.click(screen.getByRole("button", { name: "Verwerfen" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(screen.queryByRole("button", { name: /^Ausstehend/ })).toBeNull();
+    });
+  });
+
+  describe("note drafts on disk", () => {
+    const files = new Map<string, string>();
+    const store = {
+      write: async (id: string, text: string) => void files.set(id, text),
+      remove: async (id: string) => void files.delete(id),
+      list: async () => [...files].map(([id, text]) => ({ id, text })),
+    };
+    beforeEach(() => (files.clear(), (drafts.store = store)));
+    afterEach(() => (drafts.store = undefined));
+
+    it("restores a note that only exists on disk, keeps the one localStorage has, and removes the file when its tab is closed", async () => {
+      localStorage.setItem("picky.notes", JSON.stringify({ active: "a", notes: [{ id: "a", text: "lokal" }] }));
+      files.set("a", "älterer Stand"); // never replaces the note localStorage has
+      files.set("b", "nur auf Platte");
+      render(<App />);
+      await waitFor(() => expect(screen.getAllByRole("tab").map((t) => t.textContent)).toEqual(["lokal", "nur auf Platte"]));
+      await waitFor(() => expect(files.get("a")).toBe("lokal")); // flushed on the first save
+      fireEvent.click(screen.getAllByRole("button", { name: "Notiz schließen" })[1]!);
+      await waitFor(() => expect(files.has("b")).toBe(false));
+      expect(files.get("a")).toBe("lokal");
+    });
+
+    it("typing is written to disk after the debounce", async () => {
+      render(<App />);
+      fireEvent.change(screen.getByLabelText("Editor"), { target: { value: "mitgeschrieben" } });
+      await waitFor(() => expect([...files.values()]).toEqual(["mitgeschrieben"]), { timeout: 2000 });
+    });
   });
 
   describe("Settings: hotkey flags and Textbreite", () => {

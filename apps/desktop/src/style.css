@@ -4,7 +4,11 @@
   --bg: #fff; --surface: #f6f6f8; --fg: #1a1a1a; --muted: #666; --line: #d8d8d8;
   --accent: #5b3fd1; --accent-fg: #fff; --danger: #c0262d;
   --space-1: 4px; --space-2: 8px; --space-3: 12px; --space-4: 16px;
-  --radius: 8px; --ease: 120ms ease;
+  --radius: 8px; --radius-lg: 12px; --ease: 120ms ease;
+  /* the native window is clipped with this radius too: App reads it once and passes it to Rust (set_corner_radius) */
+  --window-radius: 12px;
+  --shadow: 0 12px 32px rgb(0 0 0 / 0.18);
+  --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
 }
 @media (prefers-color-scheme: dark) {
   :root { --bg: #16161a; --surface: #1f1f25; --fg: #ececf0; --muted: #9a9aa5; --line: #34343c; --accent: #9b86ff; --accent-fg: #16161a; --danger: #ff7a80; }
@@ -14,7 +18,7 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 -apple
 .editor { --atomic-editor-bg: var(--surface); --atomic-editor-fg: var(--fg); }
 
 /* no max-width: the editor grows with the window */
-main { position: relative; display: flex; flex-direction: column; height: 100vh; padding: 0 var(--space-4) var(--space-4); gap: var(--space-3); }
+main { position: relative; display: flex; flex-direction: column; height: 100vh; padding: 0 var(--space-4) var(--space-4); gap: var(--space-3); border: 1px solid var(--line); border-radius: var(--window-radius); overflow: hidden; background: var(--bg); }
 main > section { flex: 1; min-height: 0; }
 section { display: flex; flex-direction: column; gap: var(--space-3); }
 
@@ -22,17 +26,21 @@ section { display: flex; flex-direction: column; gap: var(--space-3); }
 .topbar { display: flex; align-items: center; gap: var(--space-1); flex: none; padding-top: var(--space-2); border-bottom: 1px solid var(--line); user-select: none; -webkit-user-select: none; }
 .topbar [role="tablist"] { display: flex; gap: var(--space-1); min-width: 0; overflow-x: auto; }
 .topbar .spacer { flex: 1; align-self: stretch; min-width: var(--space-4); }
-.tab { display: flex; align-items: center; flex: none; border-bottom: 2px solid transparent; }
-.tab[data-active="true"] { border-bottom-color: var(--accent); }
+.tab { display: flex; align-items: center; flex: none; border-bottom: 2px solid transparent; border-radius: var(--radius) var(--radius) 0 0; transition: background var(--ease); }
+.tab:hover { background: var(--surface); }
+.tab[data-active="true"] { border-bottom-color: var(--accent); background: var(--accent-soft); }
 .tab button { border: 0; border-radius: 0; background: none; color: var(--muted); padding: var(--space-2); }
 .tab button[role="tab"] { max-width: 18ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tab[data-active="true"] button[role="tab"] { color: var(--accent); font-weight: 600; }
 .tab button:hover { color: var(--fg); }
 .tab .close { padding: 2px 6px; }
 button.icon { border: 0; background: none; padding: var(--space-1) var(--space-2); font-size: 16px; line-height: 1; }
+/* Ausstehend: a calm accent pill in the top bar, only rendered while something waits */
+button.badge { flex: none; min-width: 22px; padding: 1px var(--space-2); border-color: transparent; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 12px; font-weight: 600; line-height: 1.6; }
+button.badge:hover:not(:disabled) { background: var(--accent-soft); border-color: var(--accent); }
 
 /* search panel under the top bar */
-.panel { position: absolute; inset: 45px 0 0; z-index: 20; display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-3) var(--space-4); background: var(--bg); }
+.panel { position: absolute; inset: 45px 0 0; z-index: 20; display: flex; flex-direction: column; gap: var(--space-3); padding: var(--space-3) var(--space-4); background: var(--bg); border-radius: 0 0 calc(var(--window-radius) - 1px) calc(var(--window-radius) - 1px); }
 .panel > section { flex: 1; min-height: 0; }
 .panel .close-panel { align-self: flex-end; }
 
@@ -47,7 +55,7 @@ input { cursor: text; width: 100%; }
 button:focus-visible, .button:focus-within, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 /* capture */
-.editor { flex: 1; min-height: 160px; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; transition: border-color var(--ease); }
+.editor { flex: 1; min-height: 160px; border: 1px solid var(--line); border-radius: var(--radius-lg); overflow: hidden; transition: border-color var(--ease); }
 .editor:focus-within { border-color: var(--accent); }
 /* the editor reserves 208px below the text for scrolling past the end, which made a scrollbar permanent */
 .editor .cm-content { padding: var(--space-3) var(--space-4); max-width: var(--pn-text-width, none); margin-inline: auto; } /* Textbreite setting; centred when narrower than the window */
@@ -55,16 +63,6 @@ button:focus-visible, .button:focus-within, input:focus-visible { outline: 2px s
 .actions { display: flex; align-items: center; gap: var(--space-2); flex-wrap: wrap; }
 .actions .status { margin: 0 0 0 auto; min-height: 1.5em; color: var(--muted); font-size: 13px; }
 .actions .button input { display: none; }
-.rejected { border: 1px solid var(--danger); border-radius: var(--radius); padding: var(--space-3); flex: none; max-height: 30vh; overflow: auto; }
-.rejected h2 { margin: 0 0 var(--space-2); font-size: 14px; color: var(--danger); }
-.rejected ul { margin: 0; padding: 0; list-style: none; display: grid; gap: var(--space-2); }
-/* pending is waiting, not failed: neutral frame; one row per capture, buttons never wrap under the title */
-.rejected.pending { border-color: var(--line); }
-.pending h2 { color: var(--muted); }
-.pending li { display: flex; align-items: center; gap: var(--space-2); }
-.pending .item-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pending li button, .pending button.link { flex: none; padding: var(--space-1) var(--space-3); font-size: 13px; }
-.pending button.link { margin-top: var(--space-2); background: none; border: none; color: var(--muted); text-decoration: underline; padding-left: 0; }
 
 /* search */
 form[role="search"] { display: flex; gap: var(--space-2); flex: none; }
@@ -75,14 +73,22 @@ form[role="search"] { display: flex; gap: var(--space-2); flex: none; }
 [role="alert"] { color: var(--danger); margin: 0; }
 small { color: var(--muted); overflow-wrap: anywhere; }
 
-/* settings dialog */
-.backdrop { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: var(--space-4); background: rgb(0 0 0 / 0.4); }
-.dialog { display: grid; gap: var(--space-4); width: min(480px, 100%); max-height: 100%; overflow: auto; padding: var(--space-4); border: 1px solid var(--line); border-radius: var(--radius); background: var(--bg); outline: none; }
+/* dialogs (Einstellungen, Ausstehend) */
+.backdrop { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: var(--space-4); border-radius: var(--window-radius); background: rgb(0 0 0 / 0.4); }
+.dialog { display: grid; gap: var(--space-4); width: min(480px, 100%); max-height: 100%; overflow: auto; padding: var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--bg); box-shadow: var(--shadow); outline: none; }
+.dialog h3 { margin: 0 0 var(--space-2); font-size: 13px; font-weight: 600; color: var(--muted); }
+/* queue items are cards: neutral, no alarm colour for something that is only waiting; the title shrinks, the buttons keep their size */
+.queue { margin: 0; padding: 0; list-style: none; display: grid; gap: var(--space-2); }
+.queue li { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); }
+.queue .item-title { flex: 1; min-width: 0; display: grid; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.queue .reason { overflow: hidden; text-overflow: ellipsis; }
+.queue li button { flex: none; padding: var(--space-1) var(--space-3); font-size: 13px; }
+.dialog button.link { justify-self: start; border: 0; background: none; color: var(--muted); text-decoration: underline; padding-left: 0; }
 .dialog header { display: flex; justify-content: space-between; align-items: center; }
 .dialog h2 { margin: 0; font-size: 16px; }
 .dialog form { display: grid; gap: var(--space-3); max-width: 420px; align-content: start; }
 .dialog form button[type="submit"] { justify-self: start; }
-.dialog fieldset { display: grid; gap: var(--space-3); margin: 0; padding: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius); }
+.dialog fieldset { display: grid; gap: var(--space-3); margin: 0; padding: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--surface); }
 .dialog legend { padding: 0 var(--space-1); color: var(--muted); }
 .dialog fieldset button { justify-self: start; }
 label { display: grid; gap: var(--space-1); font-weight: 500; }

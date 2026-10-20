@@ -3,6 +3,7 @@ import { activeText, mockTauri, tauriCalls } from "./helpers";
 
 const NO_WS = { start: { ok: false } };
 const dialog = (page: Page) => page.getByRole("dialog", { name: "Einstellungen" });
+const pendingDialog = (page: Page) => page.getByRole("dialog", { name: "Ausstehend" });
 const openSettings = async (page: Page) => {
   await expect(page.getByRole("tab")).toBeVisible(); // the app has mounted and attached its shortcut listener
   await page.keyboard.press("Control+,");
@@ -221,11 +222,14 @@ test.describe("pending captures", () => {
     await page.locator(".cm-content").click();
     await page.keyboard.type("nicht verlieren");
     await page.getByRole("button", { name: "Speichern" }).click();
-    await expect(page.getByRole("heading", { name: "Ausstehend (1)" })).toBeVisible();
     await expect(page.getByRole("status").filter({ hasText: "Offline gepuffert" })).toBeVisible();
+    await expect(pendingDialog(page)).toHaveCount(0); // nothing pops up on its own, and no panel sits under the editor
+    await page.getByRole("button", { name: "Ausstehend: 1" }).click();
+    await expect(pendingDialog(page)).toBeVisible();
     expect((await tauriCalls(page)).map(([c]) => c)).toContain("outbox_write");
-    await page.getByRole("button", { name: "Als Notiz öffnen" }).click();
-    await expect(page.getByRole("heading", { name: /Ausstehend/ })).toHaveCount(0);
+    await pendingDialog(page).getByRole("button", { name: "Als Notiz öffnen" }).click();
+    await expect(pendingDialog(page)).toHaveCount(0);
+    await expect(page.getByRole("button", { name: /^Ausstehend/ })).toHaveCount(0);
     await expect.poll(() => activeText(page)).toBe("nicht verlieren");
     expect((await tauriCalls(page)).map(([c]) => c)).toContain("outbox_delete");
   });
@@ -237,9 +241,35 @@ test.describe("pending captures", () => {
     await page.keyboard.type("ohne Server");
     await page.getByRole("button", { name: "Speichern" }).click();
     await expect(page.getByRole("status").filter({ hasText: "Server-URL/Token fehlen – Notiz liegt im Postausgang" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "Ausstehend (1)" })).toBeVisible();
-    await page.getByRole("button", { name: "Ordner zeigen" }).click();
+    await page.getByRole("button", { name: "Ausstehend: 1" }).click();
+    await pendingDialog(page).getByRole("button", { name: "Ordner zeigen" }).click();
     expect((await tauriCalls(page)).map(([c]) => c)).toContain("outbox_reveal");
+  });
+
+  test("the badge opens the Ausstehend modal, Esc closes it, the background is inert and Ctrl+N creates no tab", async ({ page }) => {
+    await mockTauri(page, NO_WS);
+    await page.goto("/");
+    await page.locator(".cm-content").click();
+    await expect(page.getByRole("button", { name: /^Ausstehend/ })).toHaveCount(0); // no badge at 0
+    await page.keyboard.type("liegt im Postausgang");
+    await page.getByRole("button", { name: "Speichern" }).click();
+    const badge = page.getByRole("button", { name: "Ausstehend: 1" });
+    await expect(badge).toHaveText("1");
+    await badge.click();
+    await expect(pendingDialog(page)).toBeVisible();
+    await expect(pendingDialog(page)).toContainText("liegt im Postausgang");
+    await expect(page.locator('section[aria-label="Erfassen"]')).toHaveAttribute("inert", "");
+    await expect(page.locator(".topbar")).toHaveAttribute("inert", "");
+    await page.keyboard.press("Control+n");
+    await expect(page.getByRole("tab")).toHaveCount(1);
+    await page.keyboard.press("Escape");
+    await expect(pendingDialog(page)).toHaveCount(0);
+    await expect(page.locator(".topbar")).not.toHaveAttribute("inert", "");
+  });
+
+  test("the window frame is rounded by --window-radius", async ({ page }) => {
+    await page.goto("/");
+    expect(await page.evaluate(() => getComputedStyle(document.querySelector("main")!).borderTopLeftRadius)).toBe("12px");
   });
 });
 

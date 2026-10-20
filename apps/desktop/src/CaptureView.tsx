@@ -7,6 +7,7 @@ import type { CaptureQueue, Enqueued, QueuedCapture, Send } from "./lib/queue";
 import { inTauri, whisperstorm } from "./lib/tauri";
 import { readAttachmentsForSend, dropAttachments, restoreAttachments } from "./lib/attachments";
 import type { Note } from "./lib/notes";
+import { PendingModal } from "./PendingModal";
 import { dispatchInsertTable, editorExtensions, insertAttachmentAt, insertTextAtCursor } from "./lib/editor";
 
 const MAX_BYTES = 100 * 1024 * 1024; // sanity cap against freezing the webview; the server decides (413 above MAX_ATTACHMENT_MB without an object store)
@@ -33,11 +34,14 @@ interface Props {
   onOpenAsNote?: (text: string) => boolean;
   /** Shows the outbox folder in the file manager (Tauri only). */
   onRevealOutbox?: () => void;
+  /** The Ausstehend modal (pending and rejected captures) is shown; App owns the flag and the topbar badge that sets it. */
+  pendingOpen?: boolean;
+  onClosePending?: () => void;
 }
 
 const MISSING_CONFIG = "Server-URL/Token fehlen – Notiz liegt im Postausgang";
 
-export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled, notes, activeId, onChange, onSent, inert, configured, onOpenAsNote, onRevealOutbox }: Props) {
+export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled, notes, activeId, onChange, onSent, inert, configured, onOpenAsNote, onRevealOutbox, pendingOpen, onClosePending }: Props) {
   const text = notes.find((n) => n.id === activeId)?.text ?? "";
   const notesRef = useRef(notes);
   notesRef.current = notes;
@@ -217,6 +221,7 @@ export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled, 
   const extensions = useMemo(() => editorExtensions, []);
 
   return (
+    <>
     <section aria-label="Erfassen" inert={inert}>
       <div className="editor">
         <AtomicCodeMirrorEditor
@@ -238,34 +243,18 @@ export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled, 
         <button onClick={insertTable}>Tabelle</button>
         <p className="status" role="status" aria-live="polite">{status}</p>
       </div>
-      {pending.length > 0 && (
-        <section className="rejected pending" aria-label="Ausstehend">
-          <h2>Ausstehend ({pending.length})</h2>
-          <ul>
-            {pending.map((i) => (
-              <li key={i.key}>
-                <span className="item-title">{(i.input.text ?? i.input.filename ?? i.input.kind).slice(0, 60)}</span>
-                {onOpenAsNote && i.input.text !== undefined && <button onClick={() => void openAsNote(i)}>Als Notiz öffnen</button>}
-                <button onClick={() => void retry(i.key!)}>Erneut senden</button>
-              </li>
-            ))}
-          </ul>
-          {onRevealOutbox && <button className="link" onClick={onRevealOutbox}>Ordner zeigen</button>}
-        </section>
-      )}
-      {rejected.length > 0 && (
-        <section className="rejected" aria-label="Abgelehnte Captures">
-          <h2>Abgelehnt</h2>
-          <ul>
-            {rejected.map((i) => (
-              <li key={i.key}>
-                {(i.input.text ?? i.input.filename ?? i.input.kind).slice(0, 60)} – {i.rejected}{" "}
-                <button onClick={() => retry(i.key!)}>Erneut senden</button> <button onClick={() => discard(i.key!)}>Verwerfen</button>
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
     </section>
+      {pendingOpen && (
+        <PendingModal
+          pending={pending}
+          rejected={rejected}
+          onClose={() => onClosePending?.()}
+          onOpenAsNote={onOpenAsNote && ((item) => void openAsNote(item))}
+          onRetry={(key) => void retry(key)}
+          onDiscard={(key) => void discard(key)}
+          onRevealOutbox={onRevealOutbox}
+        />
+      )}
+    </>
   );
 }

@@ -4,7 +4,8 @@ import { CaptureView } from "./CaptureView";
 import { addNote, closeNote, loadNotes, newNote, noteTitle, saveNotes, setNoteText } from "./lib/notes";
 import { CaptureQueue } from "./lib/queue";
 import { loadHotkeys, loadTextWidth, saveTextWidth } from "./lib/settings";
-import { applyHotkeys, inTauri, revealOutbox, screenshot, tauriOutbox, token } from "./lib/tauri";
+import { applyHotkeys, inTauri, revealOutbox, screenshot, setCornerRadius, tauriDrafts, tauriOutbox, token } from "./lib/tauri";
+import { createDraftSaver, restoreDrafts } from "./lib/drafts";
 import { SearchView } from "./SearchView";
 import { SettingsModal, URL_KEY } from "./SettingsModal";
 
@@ -26,7 +27,34 @@ export function App() {
   const queue = useMemo(() => new CaptureQueue("pickynotes-queue", tauriOutbox()), []);
   const send = async (i: Parameters<PickyClient["capture"]>[0]) => (await client()).capture(i);
 
+  const [pendingOpen, setPendingOpen] = useState(false);
+  const [pendingCount, setPendingCount] = useState(0);
+  const modalOpen = settingsOpen || pendingOpen;
+  const openSettings = () => (setPendingOpen(false), setSettingsOpen(true));
+  const drafts = useMemo(() => tauriDrafts(), []);
+  const saver = useMemo(() => drafts && createDraftSaver(drafts), [drafts]);
+
   useEffect(() => void saveNotes(notes), [notes]);
+  useEffect(() => saver?.update(notes.notes), [saver, notes]);
+  // Notes only the draft files have (localStorage lost) come back as tabs; existing notes are never replaced.
+  useEffect(() => {
+    void drafts?.list().then((d) => setNotes((s) => restoreDrafts(s, d)), (e) => console.warn("Entwürfe nicht lesbar:", e));
+  }, [drafts]);
+  useEffect(() => {
+    if (!saver) return;
+    const hide = () => document.visibilityState === "hidden" && void saver.flush();
+    const unload = () => void saver.flush();
+    document.addEventListener("visibilitychange", hide);
+    window.addEventListener("beforeunload", unload);
+    return () => (document.removeEventListener("visibilitychange", hide), window.removeEventListener("beforeunload", unload));
+  }, [saver]);
+  useEffect(() => void setCornerRadius(parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--window-radius"))), []);
+  // Badge count: everything in the queue that has not reached the server (waiting plus rejected).
+  useEffect(() => {
+    const refresh = () => void queue.list().then((l) => (setPendingCount(l.length), l.length || setPendingOpen(false)), () => {});
+    refresh();
+    return queue.subscribe(refresh);
+  }, [queue]);
   const notesRef = useRef(notes);
   notesRef.current = notes;
   /** Persists first; on a failed write the state stays untouched and the caller keeps the queued copies. */
@@ -38,8 +66,8 @@ export function App() {
     setNotes(next);
     return true;
   };
-  const settingsOpenRef = useRef(false);
-  settingsOpenRef.current = settingsOpen;
+  const modalOpenRef = useRef(false);
+  modalOpenRef.current = modalOpen;
   const searchOpenRef = useRef(false);
   searchOpenRef.current = searchOpen;
 
@@ -54,7 +82,7 @@ export function App() {
     // Capture phase: CodeMirror's mac keymap binds Ctrl-n and would swallow it while the editor has focus.
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
-      if (settingsOpenRef.current) return e.key.toLowerCase() === "n" ? e.preventDefault() : undefined; // modal: no background actions
+      if (modalOpenRef.current) return e.key.toLowerCase() === "n" ? e.preventDefault() : undefined; // modal: no background actions
       if ((e.target as Element | null)?.closest?.("[data-shortcut-capture]")) return; // recording a hotkey, not using one
       if (e.key === ",") (e.preventDefault(), setSettingsOpen(true));
       else if (e.key.toLowerCase() === "n") (e.preventDefault(), setNotes(addNote));
@@ -66,7 +94,7 @@ export function App() {
     const timer = setInterval(flush, 30_000);
     flush();
     // The tray menu entry "Einstellungen" (Rust) asks the webview to open the dialog.
-    const unlisten = inTauri() ? import("@tauri-apps/api/event").then((m) => m.listen("picky:open-settings", () => setSettingsOpen(true))) : undefined;
+    const unlisten = inTauri() ? import("@tauri-apps/api/event").then((m) => m.listen("picky:open-settings", () => (setPendingOpen(false), setSettingsOpen(true)))) : undefined;
     return () => {
       window.removeEventListener("picky:focus-capture", onHotkey);
       window.removeEventListener("picky:open-search", openSearch);
@@ -79,7 +107,7 @@ export function App() {
 
   return (
     <main style={{ "--pn-text-width": textWidth === null ? "none" : `${textWidth}px` } as React.CSSProperties}>
-      <header className="topbar" data-tauri-drag-region inert={settingsOpen}>
+      <header className="topbar" data-tauri-drag-region inert={modalOpen}>
         <div role="tablist" aria-label="Notizen" data-tauri-drag-region>
           {notes.notes.map((n) => (
             <div key={n.id} role="presentation" className="tab" data-active={n.id === notes.active}>
@@ -90,8 +118,11 @@ export function App() {
         </div>
         <button className="icon" aria-label="Neue Notiz" title="Neue Notiz (Strg/Cmd+N)" onClick={() => setNotes(addNote)}>+</button>
         <span className="spacer" data-tauri-drag-region />
+        {pendingCount > 0 && (
+          <button className="badge" aria-label={`Ausstehend: ${pendingCount}`} title="Ausstehende Notizen" onClick={() => setPendingOpen(true)}>{pendingCount}</button>
+        )}
         <button className="icon" aria-label="Suche" onClick={() => setSearchOpen(true)}>⌕</button>
-        <button className="icon" aria-label="Einstellungen" title="Einstellungen (Strg/Cmd+,)" onClick={() => setSettingsOpen(true)}>⚙</button>
+        <button className="icon" aria-label="Einstellungen" title="Einstellungen (Strg/Cmd+,)" onClick={openSettings}>⚙</button>
       </header>
       <CaptureView
         queue={queue}
@@ -106,10 +137,12 @@ export function App() {
         activeId={notes.active}
         onChange={(text) => setNotes((s) => setNoteText(s, s.active, text))}
         onSent={(id) => setNotes((s) => closeNote(s, id))}
-        inert={settingsOpen}
+        inert={modalOpen}
+        pendingOpen={pendingOpen}
+        onClosePending={() => setPendingOpen(false)}
       />
       {searchOpen && (
-        <div className="panel" inert={settingsOpen}>
+        <div className="panel" inert={modalOpen}>
           <button className="close-panel" onClick={() => setSearchOpen(false)}>Suche schließen</button>
           <SearchView search={async (q) => (await (await client()).search(q)).hits} />
         </div>
