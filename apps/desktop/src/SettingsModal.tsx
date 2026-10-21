@@ -26,6 +26,7 @@ const SHORTCUT_LABELS: Record<keyof Shortcuts, string> = {
   nextTab: "Nächster Tab",
   prevTab: "Vorheriger Tab",
   jumpTab: "Zu Tab 1–9 springen (Ziffer beliebig)",
+  copyNote: "Notiz als Markdown kopieren",
 };
 
 /** Tab shortcuts: only while the window has focus, so no global registration and no clash with other apps. */
@@ -50,15 +51,18 @@ function ShortcutSettings() {
     <fieldset>
       <legend>Tastenkürzel (im Fenster)</legend>
       {(Object.keys(SHORTCUT_LABELS) as (keyof Shortcuts)[]).map((name) => (
-        <div key={name} data-shortcut={name}>
-          <label>
-            <span>{SHORTCUT_LABELS[name]}</span>
-            <input readOnly data-shortcut-capture value={keys[name]} placeholder="Kombination drücken" aria-invalid={!!errors[name]} onKeyDown={(e) => capture(name, e)} />
-          </label>
-          {errors[name] && <p role="alert">{errors[name]}</p>}
+        <div key={name} className="shortcut-row" data-shortcut={name}>
+          <span id={`shortcut-${name}`}>{SHORTCUT_LABELS[name]}</span>
+          <input readOnly data-shortcut-capture aria-labelledby={`shortcut-${name}`} value={keys[name]} placeholder="—" aria-invalid={!!errors[name]} onKeyDown={(e) => capture(name, e)} />
+          <button type="button" className="icon" title="Auf Standard zurücksetzen" aria-label={`Auf Standard: ${SHORTCUT_LABELS[name]}`} disabled={keys[name] === DEFAULT_SHORTCUTS[name]} onClick={() => apply({ ...keys, [name]: DEFAULT_SHORTCUTS[name] })}>
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M3 8a5 5 0 1 0 1.6-3.7M3 2.5v3h3" /></svg>
+          </button>
+          <button type="button" className="icon" title="Kürzel löschen" aria-label={`Löschen: ${SHORTCUT_LABELS[name]}`} disabled={!keys[name]} onClick={() => apply({ ...keys, [name]: "" })}>
+            <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M2.5 4h11M6 4V2.5h4V4M4 4l.7 9h6.6L12 4M6.5 7v3.5M9.5 7v3.5" /></svg>
+          </button>
+          {errors[name] && <p role="alert" className="row-error">{errors[name]}</p>}
         </div>
       ))}
-      <button type="button" onClick={() => apply(DEFAULT_SHORTCUTS)}>Standard</button>
     </fieldset>
   );
 }
@@ -122,7 +126,7 @@ function HotkeySettings() {
     <fieldset>
       <legend>Tastenkürzel (global)</legend>
       {(Object.keys(HOTKEY_LABELS) as (keyof Hotkeys)[]).map((name) => (
-        <div key={name} data-hotkey={name}>
+        <div key={name} className="shortcut-row" data-hotkey={name}>
           <label>
             <span id={`hotkey-${name}`}>{HOTKEY_LABELS[name]}</span>
             <input readOnly data-shortcut-capture disabled={pending} value={keys[name].key} onKeyDown={(e) => capture(name, e)} placeholder="Kombination drücken" aria-invalid={!!errors[name]} />

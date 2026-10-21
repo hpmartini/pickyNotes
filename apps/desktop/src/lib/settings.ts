@@ -27,6 +27,8 @@ export interface Shortcuts {
   prevTab: string;
   /** Modifiers plus any digit key: the digit 1-9 picks the tab, so "Control+1" means Control+1…Control+9. */
   jumpTab: string;
+  /** Copies the whole active note as Markdown. */
+  copyNote: string;
 }
 
 export const DEFAULT_SHORTCUTS: Shortcuts = {
@@ -35,6 +37,7 @@ export const DEFAULT_SHORTCUTS: Shortcuts = {
   nextTab: "Control+Tab",
   prevTab: "Control+Shift+Tab",
   jumpTab: "Control+1",
+  copyNote: "Command+Shift+C",
 };
 
 const SHORTCUTS_KEY = "picky.shortcuts";
@@ -45,7 +48,7 @@ export function loadShortcuts(): Shortcuts {
     const p = JSON.parse(localStorage.getItem(SHORTCUTS_KEY) ?? "null") as Partial<Shortcuts> | null;
     const legacy = localStorage.getItem(LEGACY_NEW_TAB_KEY);
     const out = { ...DEFAULT_SHORTCUTS, ...(legacy ? { newTab: legacy } : {}) };
-    for (const k of Object.keys(out) as (keyof Shortcuts)[]) if (p && typeof p[k] === "string" && p[k]) out[k] = p[k];
+    for (const k of Object.keys(out) as (keyof Shortcuts)[]) if (typeof p?.[k] === "string") out[k] = p[k]; // "" = deleted, no shortcut
     return out;
   } catch {
     return DEFAULT_SHORTCUTS;
@@ -62,6 +65,7 @@ export function saveShortcuts(s: Shortcuts): void {
 
 /** The tab number (0-based) a keydown accelerator selects under the `jumpTab` combination, else null. */
 export function jumpIndex(acc: string | null, jumpTab: string): number | null {
+  if (!jumpTab) return null;
   const prefix = jumpTab.replace(/\d$/, "");
   const m = acc?.startsWith(prefix) ? /^[1-9]$/.exec(acc.slice(prefix.length)) : null;
   return m ? Number(m[0]) - 1 : null;

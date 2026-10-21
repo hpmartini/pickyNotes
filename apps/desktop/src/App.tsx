@@ -1,7 +1,7 @@
 import { createClient, type PickyClient } from "@pickynotes/shared";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CaptureView } from "./CaptureView";
-import { addNote, closeNote, jumpNote, loadNotes, newNote, noteTitle, saveNotes, setNoteText, stepNote, type NotesState } from "./lib/notes";
+import { activeNote, addNote, closeNote, jumpNote, loadNotes, newNote, noteTitle, saveNotes, setNoteText, stepNote, type NotesState } from "./lib/notes";
 import { CaptureQueue } from "./lib/queue";
 import { jumpIndex, keydownToAccelerator, loadHotkeys, loadShortcuts, loadTextWidth, saveTextWidth } from "./lib/settings";
 import { applyHotkeys, inTauri, revealOutbox, screenshot, setCornerRadius, tauriDrafts, tauriOutbox, token } from "./lib/tauri";
@@ -72,6 +72,17 @@ export function App() {
   }, [queue]);
   const notesRef = useRef(notes);
   notesRef.current = notes;
+  const [copied, setCopied] = useState<"ok" | "failed" | null>(null);
+  /** The active tab's text is the Markdown source, copied as is. */
+  const copyActiveNote = async () => {
+    try {
+      await navigator.clipboard.writeText(activeNote(notesRef.current).text);
+      setCopied("ok");
+    } catch {
+      setCopied("failed");
+    }
+    setTimeout(() => setCopied(null), 1600);
+  };
   /** Persists first; on a failed write the state stays untouched and the caller keeps the queued copies. */
   const openAsNote = (text: string) => {
     const n = newNote(text);
@@ -85,6 +96,17 @@ export function App() {
   modalOpenRef.current = modalOpen;
   const searchOpenRef = useRef(false);
   searchOpenRef.current = searchOpen;
+  // Esc leaves the search (a modal on top keeps its own Esc) and puts the cursor back into the editor.
+  useEffect(() => {
+    if (!searchOpen) return;
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || modalOpenRef.current) return;
+      setSearchOpen(false);
+      setHotkey({ toggle: false });
+    };
+    window.addEventListener("keydown", onEsc);
+    return () => window.removeEventListener("keydown", onEsc);
+  }, [searchOpen]);
 
   useEffect(() => {
     void applyHotkeys(null, loadHotkeys()).then(({ errors }) => Object.keys(errors).length && console.warn("Hotkeys nicht registriert:", errors));
@@ -107,10 +129,12 @@ export function App() {
         : acc === keys.prevTab ? (s: NotesState) => stepNote(s, -1)
         : jump !== null ? (s: NotesState) => jumpNote(s, jump)
         : null;
-      if (!tabAction && (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey)) return;
-      if (modalOpenRef.current) return tabAction || e.key.toLowerCase() === "n" ? e.preventDefault() : undefined; // modal: no background actions
+      const copy = !!acc && acc === keys.copyNote;
+      if (!tabAction && !copy && (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey)) return;
+      if (modalOpenRef.current) return tabAction || copy || e.key.toLowerCase() === "n" ? e.preventDefault() : undefined; // modal: no background actions
       if ((e.target as Element | null)?.closest?.("[data-shortcut-capture]")) return; // recording a hotkey, not using one
       if (tabAction) return (e.preventDefault(), setNotes(tabAction));
+      if (copy) return (e.preventDefault(), void copyActiveNote());
       if (e.key === ",") (e.preventDefault(), setSettingsOpen(true));
       else if (e.key.toLowerCase() === "n") (e.preventDefault(), setNotes(addNote));
       else if (e.key.toLowerCase() === "k") (e.preventDefault(), openSearch());
@@ -145,6 +169,7 @@ export function App() {
         </div>
         <button className="icon" aria-label="Neue Notiz" title="Neue Notiz (Cmd+T / Cmd+N)" onClick={() => setNotes(addNote)}>+</button>
         <span className="spacer" data-tauri-drag-region />
+        {copied && <span role="status" className="toast">{copied === "ok" ? "Als Markdown kopiert" : "Kopieren fehlgeschlagen"}</span>}
         {pendingCount > 0 && (
           <button className="badge" aria-label={`Ausstehend: ${pendingCount}`} title="Ausstehende Notizen" onClick={() => setPendingOpen(true)}>{pendingCount}</button>
         )}

@@ -19,6 +19,7 @@ describe("tab navigation", () => {
     expect(jumpIndex("Control+0", "Control+1")).toBeNull();
     expect(jumpIndex("Alt+3", "Control+1")).toBeNull();
     expect(jumpIndex("Control+Shift+3", "Control+1")).toBeNull();
+    expect(jumpIndex("3", "")).toBeNull(); // deleted shortcut
   });
 });
 

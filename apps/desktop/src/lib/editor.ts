@@ -893,11 +893,47 @@ const listMarkerTyping = ViewPlugin.fromClass(
   { decorations: (v) => v.decorations },
 );
 
+// Text typed directly under a list item without a blank line is markdown "lazy continuation" and belongs to the item, so Atomic indents it
+// like the item's content. Typing flow (Enter, Backspace on the empty marker, text) lands there constantly and reads as a stray indent:
+// show such lines (less indented than the item's content column) flush left. The markdown itself is left alone.
+// shortcut: visual only; drop once Atomic stops indenting lazy lines.
+const listMarkerStart = /^(\s*)([-*+]|\d{1,9}[.)])\s+/;
+
+function lazyContinuationDecorations(state: EditorState): DecorationSet {
+  const { doc } = state;
+  const seen = new Set<number>();
+  const ranges: Range<Decoration>[] = [];
+  syntaxTree(state).iterate({
+    enter(node) {
+      if (node.name !== "ListItem") return;
+      const first = doc.lineAt(node.from);
+      const m = listMarkerStart.exec(first.text);
+      if (!m) return;
+      for (let n = first.number + 1; n <= doc.lineAt(node.to).number; n++) {
+        const line = doc.line(n);
+        const indent = line.text.search(/\S/);
+        if (indent >= 0 && indent < m[0].length && !seen.has(line.from)) {
+          seen.add(line.from);
+          ranges.push(Decoration.line({ class: "cm-pn-lazy" }).range(line.from));
+        }
+      }
+    },
+  });
+  return Decoration.set(ranges, true);
+}
+
+const lazyContinuation = StateField.define<DecorationSet>({
+  create: lazyContinuationDecorations,
+  update: (value, tr) => (tr.docChanged ? lazyContinuationDecorations(tr.state) : value),
+  provide: (f) => EditorView.decorations.from(f),
+});
+
 export const editorExtensions = [
   Prec.high(parser),
   taskTyping,
   Prec.highest(taskListInput),
   Prec.highest(listMarkerTyping),
+  lazyContinuation,
   Prec.highest(growFenceWithOpening),
   Prec.highest(plainEmphasisChars),
   Prec.highest(enterLeavesEmptyMarker),
