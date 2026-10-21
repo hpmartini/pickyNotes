@@ -177,6 +177,21 @@ test.describe("settings modal", () => {
     await expect(page.getByRole("tab")).toHaveCount(1);
   });
 
+  test("the window shows whether it is focused: accent frame when focused, dimmed content when not", async ({ page }) => {
+    await page.goto("/");
+    const main = page.locator("main");
+    await expect(page.getByRole("tab")).toHaveCount(1);
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await expect(main).toHaveAttribute("data-focused", "true");
+    const border = () => main.evaluate((e) => getComputedStyle(e).borderTopColor);
+    const focusedBorder = await border();
+    await expect(main.locator("> header")).toHaveCSS("opacity", "1");
+    await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+    await expect(main).toHaveAttribute("data-focused", "false");
+    await expect(main.locator("> header")).toHaveCSS("opacity", "0.55");
+    await expect.poll(border).not.toBe(focusedBorder); // accent frame is gone
+  });
+
   test("a rejected hotkey shows an error and keeps the previous one; a bare key is ignored", async ({ page }) => {
     await mockTauri(page, NO_WS);
     await page.addInitScript(() => Object.assign(window, { __failRegister: "Control+Alt+K" }));

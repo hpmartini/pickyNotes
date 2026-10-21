@@ -20,6 +20,11 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 -apple
 /* no max-width: the editor grows with the window */
 main { position: relative; display: flex; flex-direction: column; height: 100vh; padding: 0 var(--space-4) var(--space-4); gap: var(--space-3); border: 1px solid var(--line); border-radius: var(--window-radius); overflow: hidden; background: var(--bg); }
 main > section { flex: 1; min-height: 0; }
+/* Focus indicator: accent frame plus a bar above the tabs while the window has the keyboard; dimmed content when it has not. */
+main > * { transition: opacity 0.15s ease; }
+main { transition: border-color 0.15s ease, box-shadow 0.15s ease; }
+main[data-focused="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent), inset 0 3px 0 var(--accent); }
+main[data-focused="false"] > * { opacity: 0.55; }
 section { display: flex; flex-direction: column; gap: var(--space-3); }
 
 /* slim top bar: window drag region (the window has no title bar) with the note tabs and the icon buttons */

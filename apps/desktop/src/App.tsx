@@ -20,6 +20,21 @@ const configured = async () => !!localStorage.getItem(URL_KEY) && !!(await token
 
 export function App() {
   const [notes, setNotes] = useState(loadNotes);
+  // Whether the window has the keyboard: the frame lights up in the accent colour, an unfocused window is dimmed.
+  const [focused, setFocused] = useState(() => document.hasFocus());
+  useEffect(() => {
+    const on = () => setFocused(true);
+    const off = () => setFocused(false);
+    window.addEventListener("focus", on);
+    window.addEventListener("blur", off);
+    // The native key-window state is the reliable source for the non-activating panel; the DOM events cover the browser and tests.
+    const native = inTauri() ? import("@tauri-apps/api/window").then((m) => m.getCurrentWindow().onFocusChanged((e) => setFocused(e.payload))).catch(() => undefined) : undefined;
+    return () => {
+      window.removeEventListener("focus", on);
+      window.removeEventListener("blur", off);
+      void native?.then((unlisten) => unlisten?.());
+    };
+  }, []);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [textWidth, setTextWidth] = useState(loadTextWidth);
@@ -118,7 +133,7 @@ export function App() {
   }, [queue]);
 
   return (
-    <main style={{ "--pn-text-width": textWidth === null ? "none" : `${textWidth}px` } as React.CSSProperties}>
+    <main data-focused={focused} style={{ "--pn-text-width": textWidth === null ? "none" : `${textWidth}px` } as React.CSSProperties}>
       <header className="topbar" data-tauri-drag-region inert={modalOpen}>
         <div role="tablist" aria-label="Notizen" data-tauri-drag-region>
           {notes.notes.map((n) => (
