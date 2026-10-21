@@ -165,6 +165,11 @@ label.check input { width: auto; }
 .cm-pn-inline-image { max-width: 100%; max-height: 12em; vertical-align: text-bottom; border-radius: 4px; }
 
 /* File-chip decoration for non-image attachments. */
+.cm-pn-audio { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 2px 8px; border-radius: 6px; background: var(--surface); border: 1px solid var(--line); font-size: 0.9em; }
+.cm-pn-audio button { font-size: 0.9em; padding: 1px 8px; }
+.cm-pn-audio-status { opacity: 0.75; }
+.cm-pn-audio-error { color: #c0392b; opacity: 1; }
+.cm-line.cm-pn-audio-collapsed { display: none; }
 .cm-pn-file-chip { padding: 0 6px; border-radius: 4px; background: var(--surface); border: 1px solid var(--line); font-size: 0.9em; }
 
 

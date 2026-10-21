@@ -200,3 +200,20 @@ describe("tauriOutbox", () => {
     vi.mocked(invoke).mockReset();
   });
 });
+
+describe("transcribeAudio", () => {
+  it("sends the recording as base64 to transcribe_audio; outside Tauri answers 'not running'", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const { transcribeAudio, WHISPERSTORM_NOT_RUNNING } = await import("./tauri");
+    delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
+    expect(await transcribeAudio(new Uint8Array([1]), "m4a")).toEqual({ ok: false, error: WHISPERSTORM_NOT_RUNNING });
+    Object.assign(window, { __TAURI_INTERNALS__: {} });
+    vi.mocked(invoke).mockResolvedValueOnce({ ok: true, phase: "success", text: "hi" });
+    expect(await transcribeAudio(new Uint8Array([104, 105]), "m4a")).toEqual({ ok: true, phase: "success", text: "hi" });
+    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith("transcribe_audio", { data: "aGk=", ext: "m4a" });
+    vi.mocked(invoke).mockRejectedValueOnce(new Error("boom"));
+    expect(await transcribeAudio(new Uint8Array([1]), "m4a")).toEqual({ ok: false, error: "boom" });
+    delete (window as unknown as Record<string, unknown>).__TAURI_INTERNALS__;
+    vi.mocked(invoke).mockReset();
+  });
+});

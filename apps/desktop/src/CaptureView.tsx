@@ -9,6 +9,9 @@ import { readAttachmentsForSend, dropAttachments, restoreAttachments } from "./l
 import type { Note } from "./lib/notes";
 import { PendingModal } from "./PendingModal";
 import { dispatchInsertTable, editorExtensions, insertAttachmentAt, insertTextAtCursor } from "./lib/editor";
+import { AUDIO_MAX_SECONDS } from "@pickynotes/shared";
+import { audioExt, audioLabel, formatDuration, transcribeBlock } from "./lib/audio-blocks";
+import { startRecorder, type Recorder } from "./lib/recorder";
 
 const MAX_BYTES = 100 * 1024 * 1024; // sanity cap against freezing the webview; the server decides (413 above MAX_ATTACHMENT_MB without an object store)
 
@@ -48,6 +51,8 @@ export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled, 
   const [status, setStatus] = useState("");
   const [recording, setRecording] = useState(false);
   const [starting, setStarting] = useState(false); // start can wait on the microphone prompt for up to 30 s
+  const [audioElapsed, setAudioElapsed] = useState<number | null>(null); // seconds while a voice note is being recorded
+  const audioRec = useRef<{ recorder: Recorder; startedAt: number; tick: number; limit: number } | null>(null);
   const [items, setItems] = useState<QueuedCapture[]>([]);
   const rejected = items.filter((i) => i.rejected);
   const pending = items.filter((i) => !i.rejected);
@@ -178,6 +183,47 @@ export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled, 
     }
   }
 
+  /** Voice note: records in the webview (MediaRecorder), auto-stops at AUDIO_MAX_SECONDS, then the recording becomes an attachment and is transcribed by WhisperStorm. */
+  async function toggleAudio() {
+    const cur = audioRec.current;
+    if (cur) {
+      audioRec.current = null;
+      window.clearInterval(cur.tick);
+      window.clearTimeout(cur.limit);
+      setAudioElapsed(null);
+      try {
+        const { bytes, mime } = await cur.recorder.stop();
+        const seconds = Math.round((Date.now() - cur.startedAt) / 1000);
+        const view = getView();
+        if (!view) return setStatus("Editor nicht bereit – Aufnahme verworfen");
+        const now = new Date();
+        const stamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}-${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}`;
+        const id = await insertAttachmentAt(view, view.state.selection.main.head, { name: `aufnahme-${stamp}.${audioExt(mime)}`, mime, bytes, label: audioLabel(now, seconds) });
+        setStatus("");
+        void transcribeBlock(view, id);
+      } catch (e) {
+        setStatus(e instanceof Error ? e.message : String(e));
+      }
+      return;
+    }
+    setStatus("");
+    try {
+      const recorder = await startRecorder();
+      const startedAt = Date.now();
+      setAudioElapsed(0);
+      audioRec.current = {
+        recorder,
+        startedAt,
+        tick: window.setInterval(() => setAudioElapsed(Math.floor((Date.now() - startedAt) / 1000)), 1000),
+        limit: window.setTimeout(() => void toggleAudioRef.current(), AUDIO_MAX_SECONDS * 1000),
+      };
+    } catch (e) {
+      setStatus(`Mikrofon nicht verfügbar (${e instanceof Error ? e.message : e})`);
+    }
+  }
+  const toggleAudioRef = useRef(toggleAudio);
+  toggleAudioRef.current = toggleAudio;
+
   // A new or switched note takes the cursor, so typing can start right away.
   const mounted = useRef(false);
   useEffect(() => {
@@ -234,7 +280,8 @@ export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled, 
       </div>
       <div className="actions">
         <button className="primary" onClick={sendText} disabled={!text.trim()}>Speichern</button>
-        <button onClick={toggleRecording} title="Speech-to-Text (Ctrl+Alt+V)" aria-pressed={recording} disabled={starting}>{recording ? "Stopp" : "STT"}</button>
+        <button onClick={toggleRecording} title="Speech-to-Text (Ctrl+Alt+V)" aria-pressed={recording} disabled={starting || audioElapsed !== null}>{recording ? "Stopp" : "STT"}</button>
+        <button onClick={toggleAudio} title="Sprachnotiz aufnehmen (max. 10 min)" aria-pressed={audioElapsed !== null} disabled={recording || starting}>{audioElapsed === null ? "Aufnahme" : `Stopp ${formatDuration(audioElapsed)}`}</button>
         {screenshot && <button onClick={takeScreenshot}>Screenshot</button>}
         <label className="button">
           Datei
