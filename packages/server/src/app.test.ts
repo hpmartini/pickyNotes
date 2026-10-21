@@ -153,6 +153,17 @@ describe("capture pipeline", () => {
     expect(await readFile(path.join(root, `raw/attachments/${id}-${hid("b")}-dok.pdf`), "utf8")).toBe("hi");
   });
 
+  it("text with an audio attachment: stored in the vault, link rewritten, transcript line kept, no extract job", async () => {
+    const send = vi.spyOn(queue, "send");
+    const text = "[🎙 Aufnahme 2026-10-21 14:03 (0:03)](pending:rec1)\n> Transkript: hallo welt";
+    const { id } = (await (await post("/captures", { kind: "text", source: "typed", text, attachments: [{ id: "rec1", name: "aufnahme.m4a", mime: "audio/mp4", data: Buffer.from("AAC").toString("base64") }] })).json()) as { id: string };
+    const rel = `raw/attachments/${id}-${hid("rec1")}-aufnahme.m4a`;
+    const file = await readFile(path.join(root, `raw/${id}.md`), "utf8");
+    expect(file).toContain(`[🎙 Aufnahme 2026-10-21 14:03 (0:03)](${rel})\n> Transkript: hallo welt`);
+    expect(await readFile(path.join(root, rel), "utf8")).toBe("AAC");
+    expect(send.mock.calls.some(([name]) => name === "extract-inline")).toBe(false);
+  });
+
   it("text with attachments: two same-named files with different bytes get two files and two distinct links", async () => {
     const att = (id: string, s: string) => ({ id, name: "screenshot.png", mime: "image/png", data: Buffer.from(s).toString("base64") });
     const body = { kind: "text", source: "typed", text: "![a](pending:s1) ![b](pending:s2)", attachments: [att("s1", "AAA"), att("s2", "BBB")] };
