@@ -98,7 +98,7 @@ fn transcribe_at(sock: &Path, audio: &Path, timeout: Duration) -> Result<Whisper
 }
 
 /// Transcribes a recording through WhisperStorm. The vault copy lives on the server, so the bytes (base64) go to a 0600 temp file
-/// that WhisperStorm reads by absolute path; the file is removed afterwards. `ext` only names the file (AVFoundation sniffs the container).
+/// in WhisperStorm's inbox (`.../WhisperStorm/inbox/`, the only place it reads from) that it reads by absolute path; the file is removed afterwards. `ext` only names the file (AVFoundation sniffs the container).
 #[tauri::command]
 async fn transcribe_audio(data: String, ext: String) -> Result<WhisperReply, String> {
     if ext.is_empty() || ext.len() > 5 || !ext.chars().all(|c| c.is_ascii_alphanumeric()) {
@@ -108,7 +108,10 @@ async fn transcribe_audio(data: String, ext: String) -> Result<WhisperReply, Str
     tauri::async_runtime::spawn_blocking(move || {
         use std::os::unix::fs::OpenOptionsExt;
         let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
-        let file = std::env::temp_dir().join(format!("pickynotes-rec-{}-{nanos}.{ext}", std::process::id()));
+        // WhisperStorm only reads files from the inbox next to its socket.
+        let inbox = Path::new(&whisperstorm_socket_path()).with_file_name("inbox");
+        std::fs::create_dir_all(&inbox).map_err(|e| e.to_string())?;
+        let file = inbox.join(format!("pickynotes-rec-{}-{nanos}.{ext}", std::process::id()));
         let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&file).map_err(|e| e.to_string())?;
         let written = f.write_all(&bytes).and_then(|_| f.flush()).map_err(|e| e.to_string());
         drop(f);
