@@ -1,0 +1,15 @@
+# Ersetzt GitHub Actions (Account-weite Budget-Sperre): nur Lint + Typecheck, nur beim PR.
+when:
+  - event: pull_request
+    branch: main
+
+steps:
+  - name: install
+    image: node:22-bookworm
+    commands:
+      - npm ci --include=dev
+
+  - name: typecheck
+    image: node:22-bookworm
+    commands:
+      - npm run typecheck
