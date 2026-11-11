@@ -10,7 +10,7 @@ import type { Note } from "./lib/notes";
 import { PendingModal } from "./PendingModal";
 import { dispatchInsertTable, editorExtensions, insertAttachmentAt, insertTextAtCursor } from "./lib/editor";
 import { AUDIO_MAX_SECONDS } from "@pickynotes/shared";
-import { audioExt, audioLabel, formatDuration, pendingTranscriptions, transcribeBlock } from "./lib/audio-blocks";
+import { audioExt, audioInfo, audioLabel, formatDuration, pendingTranscriptions, transcribeBlock } from "./lib/audio-blocks";
 import { startRecorder, type Recorder } from "./lib/recorder";
 
 const MAX_BYTES = 100 * 1024 * 1024; // sanity cap against freezing the webview; the server decides (413 above MAX_ATTACHMENT_MB without an object store)
@@ -147,7 +147,9 @@ export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled, 
     if (waiting.length) {
       sending.current = true;
       setStatus("Transkription läuft – Notiz wird danach gespeichert…");
-      await Promise.all(waiting).finally(() => (sending.current = false));
+      await Promise.all(waiting.map((w) => w.done)).finally(() => (sending.current = false));
+      // A failed transcription must not slip the note out without its transcript: the user decides (retry in the block, or Save again).
+      if (waiting.some((w) => audioInfo(w.id).error)) return setStatus("Transkription fehlgeschlagen – nicht gespeichert. Im Block erneut transkribieren oder noch einmal Speichern (dann ohne Transkript).");
       setStatus("");
       // The transcript went into the editor, not into this render's `text`.
       sent = (activeIdRef.current === id ? getView()?.state.doc.toString() : undefined) ?? notesRef.current.find((n) => n.id === id)?.text ?? text;
