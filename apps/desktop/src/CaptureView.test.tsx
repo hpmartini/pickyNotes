@@ -740,4 +740,25 @@ describe("CaptureView save and transcription (#3)", () => {
     await running; // a failed transcription settles too: nothing waits forever
     expect(pendingTranscriptions(block(id))).toHaveLength(0);
   });
+
+  it("a transcription that fails while Save waits does not send; the next Save does", async () => {
+    const { stashAttachment } = await import("./lib/attachments");
+    const { transcribeBlock } = await import("./lib/audio-blocks");
+    const { id } = await stashAttachment({ name: "c.m4a", mime: "audio/mp4", bytes: new Uint8Array([1]) });
+    let finish!: (r: { ok: boolean; error?: string }) => void;
+    stt.reply = new Promise((res) => (finish = res));
+    const running = transcribeBlock(fakeView(block(id)).view, id);
+
+    const send = vi.fn(async () => ({ id: "x" }));
+    render(<CaptureView pendingOpen queue={new CaptureQueue(`c${n++}`)} send={send as never} notes={[{ id: "n1", text: block(id) }]} activeId="n1" onChange={vi.fn()} onSent={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Speichern" }));
+    await waitFor(() => expect(screen.getByRole("status").textContent).toContain("Transkription läuft"));
+    finish({ ok: false, error: "WhisperStorm läuft nicht" });
+    await running;
+    await waitFor(() => expect(screen.getByRole("status").textContent).toContain("Transkription fehlgeschlagen – nicht gespeichert"));
+    expect(send).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Speichern" })); // conscious second Save: goes out without a transcript
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+  });
 });

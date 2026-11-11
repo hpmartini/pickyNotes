@@ -84,3 +84,23 @@ test("a failed WhisperStorm reply shows its message and offers the retry", async
   await expect(page.locator(".cm-pn-audio").getByText("Datei nicht lesbar")).toBeVisible();
   await expect(page.getByRole("button", { name: "Erneut transkribieren" })).toBeVisible();
 });
+
+test("Save during 'Transkription läuft' waits and stores the note with its transcript (#3)", async ({ page }) => {
+  await page.goto("/");
+  await page.evaluate(() => {
+    (window as unknown as Win).__transcribeReply = new Promise((r) => ((window as unknown as Win).__resolveTranscribe = r));
+  });
+  await page.locator(".cm-content").click();
+  await page.getByRole("button", { name: "Aufnahme" }).click();
+  await page.getByRole("button", { name: /^Stopp / }).click();
+  await expect(page.locator(".cm-pn-audio").getByText("Transkription läuft")).toBeVisible();
+
+  const stored = async () => (await tauriCalls(page)).filter(([c, a]) => c.startsWith("outbox") && JSON.stringify(a).includes("pending:")).map(([, a]) => JSON.stringify(a));
+  await page.getByRole("button", { name: "Speichern" }).click();
+  await expect(page.getByRole("status")).toHaveText("Transkription läuft – Notiz wird danach gespeichert…");
+  expect(await stored()).toHaveLength(0); // nothing left the editor yet
+
+  await page.evaluate(() => (window as unknown as Win).__resolveTranscribe!({ ok: true, phase: "success", text: "Hallo Aufnahme" }));
+  await expect.poll(stored).not.toHaveLength(0);
+  expect((await stored())[0]).toContain("> Transkript: Hallo Aufnahme");
+});
