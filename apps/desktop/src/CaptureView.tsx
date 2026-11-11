@@ -223,6 +223,18 @@ export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled, 
   }
   const toggleAudioRef = useRef(toggleAudio);
   toggleAudioRef.current = toggleAudio;
+  // Unmounted mid-recording (#4): no timer may fire into the dead view, and the microphone must close.
+  useEffect(
+    () => () => {
+      const cur = audioRec.current;
+      if (!cur) return;
+      audioRec.current = null;
+      window.clearInterval(cur.tick);
+      window.clearTimeout(cur.limit);
+      cur.recorder.cancel();
+    },
+    [],
+  );
 
   // A new or switched note takes the cursor, so typing can start right away.
   const mounted = useRef(false);
