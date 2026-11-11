@@ -3,7 +3,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Duration;
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, Emitter, Manager, WindowEvent};
 
@@ -83,14 +83,55 @@ fn read_timeout(cmd: &str) -> Duration {
 
 /// The socket exchange behind the command, with the path as a parameter so tests can use a fake listener.
 fn whisperstorm_at(path: &Path, cmd: &str) -> Result<WhisperReply, String> {
-    let timeout = read_timeout(cmd);
+    exchange(path, &serde_json::json!({ "cmd": cmd }), read_timeout(cmd))
+}
+
+/// Error text for a missing socket; the UI matches on it to tell "not running" from a failed transcription.
+const NOT_RUNNING: &str = "WhisperStorm läuft nicht";
+
+/// Transcription can take minutes for a 10-minute recording.
+const TRANSCRIBE_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// `{"cmd":"transcribe","path":"<abs path>"}` -> `{"ok":true,"phase":"success","text":"..."}` | `{"ok":false,"phase":"error","error":"..."}`.
+fn transcribe_at(sock: &Path, audio: &Path, timeout: Duration) -> Result<WhisperReply, String> {
+    exchange(sock, &serde_json::json!({ "cmd": "transcribe", "path": audio }), timeout)
+}
+
+/// Transcribes a recording through WhisperStorm. The vault copy lives on the server, so the bytes (base64) go to a 0600 temp file
+/// in WhisperStorm's inbox (`.../WhisperStorm/inbox/`, the only place it reads from) that it reads by absolute path; the file is removed afterwards. `ext` only names the file (AVFoundation sniffs the container).
+#[tauri::command]
+async fn transcribe_audio(data: String, ext: String) -> Result<WhisperReply, String> {
+    if ext.is_empty() || ext.len() > 5 || !ext.chars().all(|c| c.is_ascii_alphanumeric()) {
+        return Err("invalid audio extension".to_string());
+    }
+    let bytes = STANDARD.decode(data).map_err(|e| e.to_string())?;
+    tauri::async_runtime::spawn_blocking(move || {
+        use std::os::unix::fs::OpenOptionsExt;
+        let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        // WhisperStorm only reads files from the inbox next to its socket.
+        let inbox = Path::new(&whisperstorm_socket_path()).with_file_name("inbox");
+        std::fs::create_dir_all(&inbox).map_err(|e| e.to_string())?;
+        let file = inbox.join(format!("pickynotes-rec-{}-{nanos}.{ext}", std::process::id()));
+        let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&file).map_err(|e| e.to_string())?;
+        let written = f.write_all(&bytes).and_then(|_| f.flush()).map_err(|e| e.to_string());
+        drop(f);
+        let reply = written.and_then(|_| transcribe_at(Path::new(&whisperstorm_socket_path()), &file, TRANSCRIBE_TIMEOUT));
+        let _ = std::fs::remove_file(&file);
+        reply
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// One newline-delimited JSON request/reply on the control socket.
+fn exchange(path: &Path, request: &serde_json::Value, timeout: Duration) -> Result<WhisperReply, String> {
     let mut stream = match UnixStream::connect(path) {
         Ok(s) => s,
-        Err(_) => return Ok(WhisperReply { ok: false, phase: None, text: None, error: Some("WhisperStorm läuft nicht".to_string()) }),
+        Err(_) => return Ok(WhisperReply { ok: false, phase: None, text: None, error: Some(NOT_RUNNING.to_string()) }),
     };
     stream.set_read_timeout(Some(timeout)).map_err(|e| e.to_string())?;
     stream.set_write_timeout(Some(Duration::from_secs(5))).map_err(|e| e.to_string())?;
-    let req = format!("{}\n", serde_json::json!({ "cmd": cmd }));
+    let req = format!("{request}\n");
     stream.write_all(req.as_bytes()).map_err(|e| e.to_string())?;
     // Replies are newline-terminated; read one line instead of waiting for EOF.
     let mut buf = String::new();
@@ -433,8 +474,27 @@ fn show_main_window(app: AppHandle) {
 
 pub fn run() {
     tauri::Builder::default()
+        // Not the default menu: its "Close Window" (Cmd+W) would hide the window before the webview sees the key, and Cmd+W closes a tab here.
+        .menu(|h| {
+            let edit = Submenu::with_items(
+                h,
+                "Bearbeiten",
+                true,
+                &[
+                    &PredefinedMenuItem::undo(h, None)?,
+                    &PredefinedMenuItem::redo(h, None)?,
+                    &PredefinedMenuItem::separator(h)?,
+                    &PredefinedMenuItem::cut(h, None)?,
+                    &PredefinedMenuItem::copy(h, None)?,
+                    &PredefinedMenuItem::paste(h, None)?,
+                    &PredefinedMenuItem::select_all(h, None)?,
+                ],
+            )?;
+            let app = Submenu::with_items(h, "pickyNotes", true, &[&PredefinedMenuItem::hide(h, None)?, &PredefinedMenuItem::quit(h, None)?])?;
+            Menu::with_items(h, &[&app, &edit])
+        })
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![keychain_get, keychain_set, screenshot, whisperstorm, set_dock_visible, set_tray_visible, show_main_window, outbox_write, outbox_list, outbox_delete, outbox_reveal, drafts_write, drafts_list, drafts_delete, set_corner_radius])
+        .invoke_handler(tauri::generate_handler![keychain_get, keychain_set, screenshot, whisperstorm, set_dock_visible, set_tray_visible, show_main_window, outbox_write, outbox_list, outbox_delete, outbox_reveal, drafts_write, drafts_list, drafts_delete, set_corner_radius, transcribe_audio])
         .on_window_event(|window, event| {
             // Keep running in the background so the global hotkey can bring the window back.
             if let WindowEvent::CloseRequested { api, .. } = event {
@@ -550,6 +610,48 @@ mod tests {
     fn whisperstorm_at_missing_socket_answers_with_the_user_facing_error() {
         let reply = whisperstorm_at(Path::new("/tmp/picky-ws-no-such-socket-xyz"), "status").unwrap();
         assert_eq!(reply, WhisperReply { ok: false, phase: None, text: None, error: Some("WhisperStorm läuft nicht".into()) });
+    }
+
+    #[test]
+    fn transcribe_at_sends_the_contract_line_and_returns_the_text() {
+        let sock = temp_sock("transcribe");
+        let server = fake_server(&sock, r#"{"ok":true,"phase":"success","text":"Hallo Aufnahme"}"#);
+        let reply = transcribe_at(&sock, Path::new("/tmp/a b/rec.m4a"), Duration::from_secs(5)).unwrap();
+        assert_eq!(server.join().unwrap(), "{\"cmd\":\"transcribe\",\"path\":\"/tmp/a b/rec.m4a\"}\n");
+        assert_eq!(reply, WhisperReply { ok: true, phase: Some("success".into()), text: Some("Hallo Aufnahme".into()), error: None });
+        let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+    }
+
+    #[test]
+    fn transcribe_at_passes_an_error_reply_through() {
+        let sock = temp_sock("transcribe-err");
+        let server = fake_server(&sock, r#"{"ok":false,"phase":"error","error":"Datei nicht lesbar"}"#);
+        let reply = transcribe_at(&sock, Path::new("/tmp/x.m4a"), Duration::from_secs(5)).unwrap();
+        server.join().unwrap();
+        assert_eq!(reply, WhisperReply { ok: false, phase: Some("error".into()), text: None, error: Some("Datei nicht lesbar".into()) });
+        let _ = std::fs::remove_dir_all(sock.parent().unwrap());
+    }
+
+    #[test]
+    fn transcribe_at_without_whisperstorm_is_the_not_running_error() {
+        let reply = transcribe_at(Path::new("/tmp/picky-ws-no-such-socket-xyz"), Path::new("/tmp/x.m4a"), Duration::from_secs(5)).unwrap();
+        assert_eq!(reply.error.as_deref(), Some(NOT_RUNNING));
+        assert!(!reply.ok);
+    }
+
+    #[test]
+    fn transcribe_at_times_out_when_the_server_never_answers() {
+        let sock = temp_sock("transcribe-timeout");
+        let listener = UnixListener::bind(&sock).unwrap();
+        let server = std::thread::spawn(move || {
+            let (s, _) = listener.accept().unwrap();
+            std::thread::sleep(Duration::from_millis(600));
+            drop(s);
+        });
+        assert!(transcribe_at(&sock, Path::new("/tmp/x.m4a"), Duration::from_millis(100)).is_err());
+        server.join().unwrap();
+        assert_eq!(TRANSCRIBE_TIMEOUT, Duration::from_secs(120));
+        let _ = std::fs::remove_dir_all(sock.parent().unwrap());
     }
 
     fn temp_dir(name: &str) -> std::path::PathBuf {

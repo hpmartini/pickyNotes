@@ -3,8 +3,9 @@ import { highlightMarkdown, tables as atomicTables } from "@atomic-editor/editor
 import { indentLess } from "@codemirror/commands";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { syntaxTree } from "@codemirror/language";
-import { Annotation, EditorState, Prec, Range, StateField } from "@codemirror/state";
-import { Decoration, type DecorationSet, EditorView, keymap, ViewPlugin, WidgetType } from "@codemirror/view";
+import { Annotation, EditorState, Prec, Range, StateEffect, StateField } from "@codemirror/state";
+import { Decoration, type DecorationSet, EditorView, keymap, ViewPlugin, type ViewUpdate, WidgetType } from "@codemirror/view";
+import { AUDIO_LABEL_PREFIX, audioInfo, patchAudio, subscribeAudio, togglePlay, transcribeBlock, transcriptLineAfter } from "./audio-blocks";
 
 // shortcut: duplicates Atomic Editor's internal markdown({base: markdownLanguage, extensions: [highlightMarkdown]}) to add {remove: ["SetextHeading"]} and pass codeLanguages so fenced blocks get syntax highlighting (Atomic wires the same in its default editor); Prec.high wins over the built-in language facet; drop once Atomic Editor accepts lezer extensions.
 const parser = markdown({ base: markdownLanguage, extensions: [highlightMarkdown, { remove: ["SetextHeading"] }], codeLanguages: ATOMIC_CODE_LANGUAGES }).language;
@@ -721,7 +722,10 @@ export function dispatchInsertTable(view: EditorView): void {
 }
 
 // Renders markdown images and file links inline. Pending attachments (`pending:<id>`) get a tiny chip; images get a blob/data: preview.
+// Voice recordings (`[🎙 …](pending:<id>)`) get a player chip, and the `> Transkript:` line below can be collapsed.
 // shortcut: we rebuild on every update because the doc length is small and attachment IDs are cheap to enumerate.
+const audioRefresh = StateEffect.define<null>();
+
 function attachmentsRenderDecos(view: EditorView): DecorationSet {
   const decos: Range<Decoration>[] = [];
   const text = view.state.doc.toString();
@@ -732,11 +736,60 @@ function attachmentsRenderDecos(view: EditorView): DecorationSet {
     if (text[m.index - 1] === "!") continue;
     const from = m.index;
     const to = from + m[0].length;
-    if (!inCodeSpan(view.state, from, to)) {
-      decos.push(Decoration.replace({ widget: new FileChipWidget(m[1] ?? "") }).range(from, to));
+    if (inCodeSpan(view.state, from, to)) continue;
+    const label = m[1] ?? "";
+    if (!label.startsWith(AUDIO_LABEL_PREFIX)) {
+      decos.push(Decoration.replace({ widget: new FileChipWidget(label) }).range(from, to));
+      continue;
     }
+    const id = m[2]!;
+    const info = audioInfo(id);
+    const quote = transcriptLineAfter(text, to);
+    const collapsed = !!quote && !!info.collapsed;
+    decos.push(Decoration.replace({ widget: new AudioChipWidget(id, label, !!quote, collapsed, !!info.transcribing, info.error ?? "", !!info.playing) }).range(from, to));
+    if (collapsed) decos.push(Decoration.line({ attributes: { class: "cm-pn-audio-collapsed" } }).range(quote.from));
   }
   return Decoration.set(decos, true);
+}
+
+/** Player chip for a voice recording: Play/Pause, label, and either the transcript toggle, "Transkription läuft", or the error with a retry button. */
+class AudioChipWidget extends WidgetType {
+  constructor(readonly id: string, readonly label: string, readonly hasTranscript: boolean, readonly collapsed: boolean, readonly transcribing: boolean, readonly error: string, readonly playing: boolean) { super(); }
+  toDOM(view: EditorView) {
+    const chip = document.createElement("span");
+    chip.className = "cm-pn-audio";
+    chip.dataset.audioId = this.id;
+    const button = (cls: string, text: string, onClick: () => void) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = cls;
+      b.textContent = text;
+      b.onmousedown = (e) => e.preventDefault(); // no caret jump / editor blur
+      b.onclick = onClick;
+      chip.append(b);
+    };
+    const note = (cls: string, text: string) => {
+      const s = document.createElement("span");
+      s.className = cls;
+      s.textContent = text;
+      chip.append(s);
+    };
+    button("cm-pn-audio-play", this.playing ? "⏸ Pause" : "▶ Abspielen", () => void togglePlay(this.id));
+    note("cm-pn-audio-label", this.label);
+    if (this.hasTranscript) {
+      button("cm-pn-audio-toggle", this.collapsed ? "Transkript ausklappen" : "Transkript einklappen", () => patchAudio(this.id, { collapsed: !this.collapsed }));
+    } else if (this.transcribing) {
+      note("cm-pn-audio-status", "Transkription läuft");
+    } else {
+      if (this.error) note("cm-pn-audio-status cm-pn-audio-error", this.error);
+      button("cm-pn-audio-retry", "Erneut transkribieren", () => void transcribeBlock(view, this.id));
+    }
+    return chip;
+  }
+  eq(o: AudioChipWidget) {
+    return o.id === this.id && o.label === this.label && o.hasTranscript === this.hasTranscript && o.collapsed === this.collapsed && o.transcribing === this.transcribing && o.error === this.error && o.playing === this.playing;
+  }
+  ignoreEvent() { return true; }
 }
 
 class FileChipWidget extends WidgetType {
@@ -774,10 +827,16 @@ const pendingImageSrc = ViewPlugin.fromClass(
 const attachmentsRenderPlugin = ViewPlugin.fromClass(
   class {
     decorations: DecorationSet;
-    constructor(view: EditorView) { this.decorations = attachmentsRenderDecos(view); }
-    update(update: { docChanged: boolean; viewportChanged: boolean; state: EditorState; view: EditorView }) {
-      if (update.docChanged || update.viewportChanged) this.decorations = attachmentsRenderDecos(update.view);
+    unsubscribe: () => void;
+    constructor(view: EditorView) {
+      this.decorations = attachmentsRenderDecos(view);
+      // Playback and transcription state live outside the document; poke the editor so the chip redraws.
+      this.unsubscribe = subscribeAudio(() => queueMicrotask(() => view.dispatch({ effects: audioRefresh.of(null) })));
     }
+    update(update: ViewUpdate) {
+      if (update.docChanged || update.viewportChanged || update.transactions.some((t) => t.effects.some((e) => e.is(audioRefresh)))) this.decorations = attachmentsRenderDecos(update.view);
+    }
+    destroy() { this.unsubscribe(); }
   },
   { decorations: (v) => v.decorations },
 );
@@ -785,15 +844,16 @@ const attachmentsRenderPlugin = ViewPlugin.fromClass(
 // Paste/drop handler: stash each file/blob as an attachment and insert `![name](pending:<id>)` (image) or `[name](pending:<id>)` (other) at the cursor.
 // shortcut: bypasses Atomic's default paste handling, which would just paste file paths as plain text.
 // The link gets its own line (Atomic previews an image only as a block) and the caret lands on the line below it; shared by paste, drop and the Screenshot/Datei buttons.
-export async function insertAttachmentAt(view: EditorView, pos: number, file: { name: string; mime: string; bytes: Uint8Array }): Promise<void> {
+export async function insertAttachmentAt(view: EditorView, pos: number, file: { name: string; mime: string; bytes: Uint8Array; label?: string }): Promise<string> {
   const { stashAttachment, makeMarkdownLink } = await import("./attachments");
-  const { markdownTarget } = await stashAttachment(file);
-  const link = makeMarkdownLink(file.name, markdownTarget, file.mime);
+  const { id, markdownTarget } = await stashAttachment(file);
+  const link = makeMarkdownLink(file.label ?? file.name, markdownTarget, file.mime);
   const { doc } = view.state;
   pos = Math.min(pos, doc.length); // the doc may have shrunk while the bytes were stashed
   const before = pos > 0 && doc.sliceString(pos - 1, pos) !== "\n" ? "\n" : "";
   const nextIsBreak = doc.sliceString(pos, pos + 1) === "\n";
   view.dispatch({ changes: { from: pos, insert: before + link + (nextIsBreak ? "" : "\n") }, selection: { anchor: pos + before.length + link.length + 1 }, userEvent: "input.paste" });
+  return id;
 }
 
 /** True when the clipboard carries any text next to the files. A browser "copy image" carries only an `<img>` in text/html: that stays a file paste.
@@ -893,11 +953,47 @@ const listMarkerTyping = ViewPlugin.fromClass(
   { decorations: (v) => v.decorations },
 );
 
+// Text typed directly under a list item without a blank line is markdown "lazy continuation" and belongs to the item, so Atomic indents it
+// like the item's content. Typing flow (Enter, Backspace on the empty marker, text) lands there constantly and reads as a stray indent:
+// show such lines (less indented than the item's content column) flush left. The markdown itself is left alone.
+// shortcut: visual only; drop once Atomic stops indenting lazy lines.
+const listMarkerStart = /^(\s*)([-*+]|\d{1,9}[.)])\s+/;
+
+function lazyContinuationDecorations(state: EditorState): DecorationSet {
+  const { doc } = state;
+  const seen = new Set<number>();
+  const ranges: Range<Decoration>[] = [];
+  syntaxTree(state).iterate({
+    enter(node) {
+      if (node.name !== "ListItem") return;
+      const first = doc.lineAt(node.from);
+      const m = listMarkerStart.exec(first.text);
+      if (!m) return;
+      for (let n = first.number + 1; n <= doc.lineAt(node.to).number; n++) {
+        const line = doc.line(n);
+        const indent = line.text.search(/\S/);
+        if (indent >= 0 && indent < m[0].length && !seen.has(line.from)) {
+          seen.add(line.from);
+          ranges.push(Decoration.line({ class: "cm-pn-lazy" }).range(line.from));
+        }
+      }
+    },
+  });
+  return Decoration.set(ranges, true);
+}
+
+const lazyContinuation = StateField.define<DecorationSet>({
+  create: lazyContinuationDecorations,
+  update: (value, tr) => (tr.docChanged ? lazyContinuationDecorations(tr.state) : value),
+  provide: (f) => EditorView.decorations.from(f),
+});
+
 export const editorExtensions = [
   Prec.high(parser),
   taskTyping,
   Prec.highest(taskListInput),
   Prec.highest(listMarkerTyping),
+  lazyContinuation,
   Prec.highest(growFenceWithOpening),
   Prec.highest(plainEmphasisChars),
   Prec.highest(enterLeavesEmptyMarker),

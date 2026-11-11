@@ -116,6 +116,127 @@ test.describe("settings modal", () => {
     await expect(page.getByRole("tab")).toHaveCount(1);
   });
 
+  test("Cmd+T opens a new tab by default; the combination can be changed in the settings", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.getByRole("tab")).toHaveCount(1); // mounted, shortcut listener attached
+    await page.keyboard.press("Meta+t");
+    await expect(page.getByRole("tab")).toHaveCount(2);
+    await page.keyboard.press("Control+,");
+    await expect(dialog(page)).toBeVisible();
+    await dialog(page).locator("[data-shortcut=newTab] input").focus();
+    await page.keyboard.press("Control+Alt+j");
+    await expect(dialog(page).locator("[data-shortcut=newTab] input")).toHaveValue("Control+Alt+J");
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("Meta+t");
+    await expect(page.getByRole("tab")).toHaveCount(2);
+    await page.keyboard.press("Control+Alt+j");
+    await expect(page.getByRole("tab")).toHaveCount(3);
+  });
+
+  test("Cmd+W closes the tab, Ctrl+Tab / Ctrl+Shift+Tab cycle, Ctrl+1..9 jump; all are rebindable", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.getByRole("tab")).toHaveCount(1);
+    await page.keyboard.press("Meta+t");
+    await page.keyboard.press("Meta+t");
+    await expect(page.getByRole("tab")).toHaveCount(3);
+    const selected = page.getByRole("tab", { selected: true });
+    const index = async () => (await page.getByRole("tab").evaluateAll((els) => els.findIndex((e) => e.getAttribute("aria-selected") === "true")));
+    expect(await index()).toBe(2);
+    await page.keyboard.press("Control+Tab"); // wraps to the first
+    await expect.poll(index).toBe(0);
+    await page.keyboard.press("Control+Shift+Tab"); // and back to the last
+    await expect.poll(index).toBe(2);
+    await page.keyboard.press("Control+2");
+    await expect.poll(index).toBe(1);
+    await page.keyboard.press("Control+9"); // no ninth tab: nothing changes
+    await expect.poll(index).toBe(1);
+    await page.keyboard.press("Meta+w");
+    await expect(page.getByRole("tab")).toHaveCount(2);
+    await expect(selected).toHaveCount(1);
+
+    await page.keyboard.press("Control+,");
+    await expect(dialog(page)).toBeVisible();
+    const field = dialog(page).locator("[data-shortcut=closeTab] input");
+    await field.focus();
+    await page.keyboard.press("Control+Alt+x");
+    await expect(field).toHaveValue("Control+Alt+X");
+    const jump = dialog(page).locator("[data-shortcut=jumpTab] input");
+    await jump.focus();
+    await page.keyboard.press("Alt+j"); // no digit: rejected
+    await expect(dialog(page).getByRole("alert")).toBeVisible();
+    await page.keyboard.press("Alt+1");
+    await expect(jump).toHaveValue("Alt+1");
+    await page.keyboard.press("Escape");
+    await page.keyboard.press("Meta+w"); // old binding is gone
+    await expect(page.getByRole("tab")).toHaveCount(2);
+    await page.keyboard.press("Alt+2");
+    await expect.poll(index).toBe(1);
+    await page.keyboard.press("Alt+1");
+    await expect.poll(index).toBe(0);
+    await page.keyboard.press("Control+Alt+x");
+    await expect(page.getByRole("tab")).toHaveCount(1);
+  });
+
+  test("Cmd+Shift+C copies the active note as Markdown; shortcuts have per-row reset and delete icons", async ({ page, context }) => {
+    await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+    await page.goto("/");
+    await page.locator(".cm-content").click();
+    await page.keyboard.type("# Titel", { delay: 8 });
+    await page.keyboard.press("Enter");
+    await page.keyboard.type("- punkt", { delay: 8 });
+    await page.keyboard.press("Meta+Shift+c");
+    await expect(page.locator(".toast")).toHaveText("Als Markdown kopiert");
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("# Titel\n- punkt");
+
+    await page.keyboard.press("Control+,");
+    const row = dialog(page).locator("[data-shortcut=copyNote]");
+    await expect(row.locator("input")).toHaveValue("Command+Shift+C");
+    await expect(row.getByRole("button", { name: /Auf Standard/ })).toBeDisabled(); // already the default
+    await row.getByRole("button", { name: /Löschen/ }).click();
+    await expect(row.locator("input")).toHaveValue("");
+    await expect(row.getByRole("button", { name: /Löschen/ })).toBeDisabled();
+    await row.getByRole("button", { name: /Auf Standard/ }).click();
+    await expect(row.locator("input")).toHaveValue("Command+Shift+C");
+    await row.getByRole("button", { name: /Löschen/ }).click();
+    await page.keyboard.press("Escape");
+    await page.evaluate(() => navigator.clipboard.writeText("unverändert"));
+    await page.keyboard.press("Meta+Shift+c"); // deleted: does nothing
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe("unverändert");
+    // label left, key field and the two icons to its right on one line
+    await page.keyboard.press("Control+,");
+    const box = async (loc: import("@playwright/test").Locator) => (await loc.boundingBox())!;
+    const [label, input, reset, del] = [await box(row.locator("span").first()), await box(row.locator("input")), await box(row.getByRole("button", { name: /Auf Standard/ })), await box(row.getByRole("button", { name: /Löschen/ }))];
+    expect(label.x).toBeLessThan(input.x);
+    expect(input.x + input.width).toBeLessThanOrEqual(reset.x);
+    expect(reset.x).toBeLessThan(del.x);
+    expect(Math.abs(input.y + input.height / 2 - (del.y + del.height / 2))).toBeLessThan(4);
+  });
+
+  test("Esc closes the search and puts the cursor back into the editor", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.getByRole("tab")).toHaveCount(1);
+    await page.keyboard.press("Control+k");
+    await expect(page.getByRole("search")).toBeVisible();
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("search")).toHaveCount(0);
+    await expect.poll(() => page.evaluate(() => !!document.activeElement?.closest(".cm-content"))).toBe(true);
+  });
+
+  test("the window shows whether it is focused: accent frame when focused, dimmed content when not", async ({ page }) => {
+    await page.goto("/");
+    const main = page.locator("main");
+    await expect(page.getByRole("tab")).toHaveCount(1);
+    await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+    await expect(main).toHaveAttribute("data-focused", "true");
+    const border = () => main.evaluate((e) => getComputedStyle(e).borderTopColor);
+    const focusedBorder = await border();
+    await expect(main.locator("> header")).toHaveCSS("opacity", "1");
+    await page.evaluate(() => window.dispatchEvent(new Event("blur")));
+    await expect(main).toHaveAttribute("data-focused", "false");
+    await expect(main.locator("> header")).toHaveCSS("opacity", "0.55");
+    await expect.poll(border).not.toBe(focusedBorder); // accent frame is gone
+  });
+
   test("a rejected hotkey shows an error and keeps the previous one; a bare key is ignored", async ({ page }) => {
     await mockTauri(page, NO_WS);
     await page.addInitScript(() => Object.assign(window, { __failRegister: "Control+Alt+K" }));

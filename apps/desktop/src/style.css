@@ -20,6 +20,11 @@ body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 -apple
 /* no max-width: the editor grows with the window */
 main { position: relative; display: flex; flex-direction: column; height: 100vh; padding: 0 var(--space-4) var(--space-4); gap: var(--space-3); border: 1px solid var(--line); border-radius: var(--window-radius); overflow: hidden; background: var(--bg); }
 main > section { flex: 1; min-height: 0; }
+/* Focus indicator: accent frame plus a bar above the tabs while the window has the keyboard; dimmed content when it has not. */
+main > * { transition: opacity 0.15s ease; }
+main { transition: border-color 0.15s ease, box-shadow 0.15s ease; }
+main[data-focused="true"] { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent), inset 0 3px 0 var(--accent); }
+main[data-focused="false"] > * { opacity: 0.55; }
 section { display: flex; flex-direction: column; gap: var(--space-3); }
 
 /* slim top bar: window drag region (the window has no title bar) with the note tabs and the icon buttons */
@@ -93,6 +98,15 @@ small { color: var(--muted); overflow-wrap: anywhere; }
 .dialog legend { padding: 0 var(--space-1); color: var(--muted); }
 .dialog fieldset button { justify-self: start; }
 label { display: grid; gap: var(--space-1); font-weight: 500; }
+/* Shortcut rows: label left, key field next to the icon buttons on the right (reset, delete). */
+.shortcut-row { display: grid; grid-template-columns: minmax(5.5rem, 1fr) minmax(8rem, 13rem) auto auto; align-items: center; gap: var(--space-2); }
+.shortcut-row > label:not(.check) { display: contents; font-weight: 500; }
+.shortcut-row > span, .shortcut-row > label:not(.check) > span { font-weight: 500; min-width: 0; overflow-wrap: anywhere; }
+.shortcut-row input { text-align: center; font-size: 12px; padding-inline: 4px; min-width: 0; }
+.shortcut-row .row-error { grid-column: 1 / -1; margin: 0; }
+.shortcut-row label.check { grid-column: 3 / -1; }
+.dialog .shortcut-row button.icon { justify-self: center; display: grid; place-items: center; width: 28px; height: 28px; padding: 0; }
+.toast { flex: none; padding: 1px var(--space-2); border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 12px; font-weight: 600; }
 label.check { display: flex; align-items: center; gap: var(--space-2); }
 label.check input { width: auto; }
 
@@ -151,10 +165,16 @@ label.check input { width: auto; }
 .cm-pn-inline-image { max-width: 100%; max-height: 12em; vertical-align: text-bottom; border-radius: 4px; }
 
 /* File-chip decoration for non-image attachments. */
+.cm-pn-audio { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 2px 8px; border-radius: 6px; background: var(--surface); border: 1px solid var(--line); font-size: 0.9em; }
+.cm-pn-audio button { font-size: 0.9em; padding: 1px 8px; }
+.cm-pn-audio-status { opacity: 0.75; }
+.cm-pn-audio-error { color: #c0392b; opacity: 1; }
+.cm-line.cm-pn-audio-collapsed { display: none; }
 .cm-pn-file-chip { padding: 0 6px; border-radius: 4px; background: var(--surface); border: 1px solid var(--line); font-size: 0.9em; }
 
 
 /* List markers while typing (lib/editor.ts): a bare marker is plain text, "- " shows its gap before the first letter. */
 .cm-line.cm-pn-bare-marker { padding-left: 0 !important; text-indent: 0 !important; }
 .cm-pn-bare-marker .cm-atomic-list-marker { display: inline; width: auto; margin: 0; text-align: left; }
-.cm-pn-gap { padding-right: 0.3em; margin-right: 0; } /* 0.9em marker + 0.3em = Atomic's 1.2em alcove */
+.cm-pn-gap { box-sizing: content-box; padding-right: 0.3em; margin-right: 0; } /* 0.9em marker + 0.3em = Atomic's 1.2em alcove; content-box, or the padding would eat into the 0.9em and shift the bullet left of its siblings */
+.cm-line.cm-pn-lazy { padding-left: 0 !important; text-indent: 0 !important; } /* text directly under a list item (lazy continuation) is a plain line, not list content */

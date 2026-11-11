@@ -12,7 +12,7 @@ const Env = z.object({
   CORS_ORIGINS: z.string().default("tauri://localhost,http://tauri.localhost,http://localhost:1420"),
   RATE_LIMIT_PER_MIN: z.coerce.number().default(30),
   CLAUDE_DAILY_LIMIT: z.coerce.number().default(200),
-  MAX_ATTACHMENT_MB: z.coerce.number().default(10),
+  MAX_ATTACHMENT_MB: z.coerce.number().default(25),
   /** Default for LLM reranking of search hits (per request: ?rerank=true|false). One claude -p call per search, so off by default. */
   SEARCH_RERANK: z.enum(["true", "false"]).default("false"),
   /** Transcription endpoint (local speaches service or WhisperStorm); unset = voice captures fail visibly and are retried. */

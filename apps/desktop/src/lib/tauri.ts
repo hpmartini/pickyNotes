@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { blobToBase64 } from "./base64";
 import type { DraftStore } from "./drafts";
 import type { Outbox } from "./queue";
 import type { HotkeyConfig, Hotkeys } from "./settings";
@@ -78,6 +79,20 @@ export async function whisperstorm(cmd: "start" | "stop" | "status"): Promise<Wh
   if (!inTauri()) return { ok: false, error: "WhisperStorm läuft nicht" };
   try {
     return await invoke<WhisperReply>("whisperstorm", { cmd });
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/** Error text of a missing control socket (Rust `NOT_RUNNING`), so callers can tell "not running" from a failed transcription. */
+export const WHISPERSTORM_NOT_RUNNING = "WhisperStorm läuft nicht";
+
+/** Asks WhisperStorm to transcribe a recording: Rust writes the bytes to a temp file and sends `{"cmd":"transcribe","path":...}` (120 s read timeout). */
+export async function transcribeAudio(bytes: Uint8Array, ext: string): Promise<WhisperReply> {
+  if (!inTauri()) return { ok: false, error: WHISPERSTORM_NOT_RUNNING };
+  try {
+    const data = await blobToBase64(new Blob([bytes as BlobPart]));
+    return await invoke<WhisperReply>("transcribe_audio", { data, ext });
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : String(e) };
   }

@@ -1,9 +1,9 @@
 import { createClient, type PickyClient } from "@pickynotes/shared";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { CaptureView } from "./CaptureView";
-import { addNote, closeNote, loadNotes, newNote, noteTitle, saveNotes, setNoteText } from "./lib/notes";
+import { activeNote, addNote, closeNote, jumpNote, loadNotes, newNote, noteTitle, saveNotes, setNoteText, stepNote, type NotesState } from "./lib/notes";
 import { CaptureQueue } from "./lib/queue";
-import { loadHotkeys, loadTextWidth, saveTextWidth } from "./lib/settings";
+import { jumpIndex, keydownToAccelerator, loadHotkeys, loadShortcuts, loadTextWidth, saveTextWidth } from "./lib/settings";
 import { applyHotkeys, inTauri, revealOutbox, screenshot, setCornerRadius, tauriDrafts, tauriOutbox, token } from "./lib/tauri";
 import { createDraftSaver, restoreDrafts } from "./lib/drafts";
 import { SearchView } from "./SearchView";
@@ -20,6 +20,21 @@ const configured = async () => !!localStorage.getItem(URL_KEY) && !!(await token
 
 export function App() {
   const [notes, setNotes] = useState(loadNotes);
+  // Whether the window has the keyboard: the frame lights up in the accent colour, an unfocused window is dimmed.
+  const [focused, setFocused] = useState(() => document.hasFocus());
+  useEffect(() => {
+    const on = () => setFocused(true);
+    const off = () => setFocused(false);
+    window.addEventListener("focus", on);
+    window.addEventListener("blur", off);
+    // The native key-window state is the reliable source for the non-activating panel; the DOM events cover the browser and tests.
+    const native = inTauri() ? import("@tauri-apps/api/window").then((m) => m.getCurrentWindow().onFocusChanged((e) => setFocused(e.payload))).catch(() => undefined) : undefined;
+    return () => {
+      window.removeEventListener("focus", on);
+      window.removeEventListener("blur", off);
+      void native?.then((unlisten) => unlisten?.());
+    };
+  }, []);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const [textWidth, setTextWidth] = useState(loadTextWidth);
@@ -57,6 +72,17 @@ export function App() {
   }, [queue]);
   const notesRef = useRef(notes);
   notesRef.current = notes;
+  const [copied, setCopied] = useState<"ok" | "failed" | null>(null);
+  /** The active tab's text is the Markdown source, copied as is. */
+  const copyActiveNote = async () => {
+    try {
+      await navigator.clipboard.writeText(activeNote(notesRef.current).text);
+      setCopied("ok");
+    } catch {
+      setCopied("failed");
+    }
+    setTimeout(() => setCopied(null), 1600);
+  };
   /** Persists first; on a failed write the state stays untouched and the caller keeps the queued copies. */
   const openAsNote = (text: string) => {
     const n = newNote(text);
@@ -70,6 +96,17 @@ export function App() {
   modalOpenRef.current = modalOpen;
   const searchOpenRef = useRef(false);
   searchOpenRef.current = searchOpen;
+  // Esc leaves the search (a modal on top keeps its own Esc) and puts the cursor back into the editor.
+  useEffect(() => {
+    if (!searchOpen) return;
+    const onEsc = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || modalOpenRef.current) return;
+      setSearchOpen(false);
+      setHotkey({ toggle: false });
+    };
+    window.addEventListener("keydown", onEsc);
+    return () => window.removeEventListener("keydown", onEsc);
+  }, [searchOpen]);
 
   useEffect(() => {
     void applyHotkeys(null, loadHotkeys()).then(({ errors }) => Object.keys(errors).length && console.warn("Hotkeys nicht registriert:", errors));
@@ -82,9 +119,22 @@ export function App() {
     window.addEventListener("picky:open-search", onOpenSearch);
     // Capture phase: CodeMirror's mac keymap binds Ctrl-n and would swallow it while the editor has focus.
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey) return;
-      if (modalOpenRef.current) return e.key.toLowerCase() === "n" ? e.preventDefault() : undefined; // modal: no background actions
+      const acc = keydownToAccelerator(e);
+      const keys = loadShortcuts(); // configurable, may include Shift/Alt
+      const jump = jumpIndex(acc, keys.jumpTab);
+      const tabAction =
+        acc === keys.newTab ? addNote
+        : acc === keys.closeTab ? (s: NotesState) => closeNote(s, s.active)
+        : acc === keys.nextTab ? (s: NotesState) => stepNote(s, 1)
+        : acc === keys.prevTab ? (s: NotesState) => stepNote(s, -1)
+        : jump !== null ? (s: NotesState) => jumpNote(s, jump)
+        : null;
+      const copy = !!acc && acc === keys.copyNote;
+      if (!tabAction && !copy && (!(e.metaKey || e.ctrlKey) || e.altKey || e.shiftKey)) return;
+      if (modalOpenRef.current) return tabAction || copy || e.key.toLowerCase() === "n" ? e.preventDefault() : undefined; // modal: no background actions
       if ((e.target as Element | null)?.closest?.("[data-shortcut-capture]")) return; // recording a hotkey, not using one
+      if (tabAction) return (e.preventDefault(), setNotes(tabAction));
+      if (copy) return (e.preventDefault(), void copyActiveNote());
       if (e.key === ",") (e.preventDefault(), setSettingsOpen(true));
       else if (e.key.toLowerCase() === "n") (e.preventDefault(), setNotes(addNote));
       else if (e.key.toLowerCase() === "k") (e.preventDefault(), openSearch());
@@ -107,7 +157,7 @@ export function App() {
   }, [queue]);
 
   return (
-    <main style={{ "--pn-text-width": textWidth === null ? "none" : `${textWidth}px` } as React.CSSProperties}>
+    <main data-focused={focused} style={{ "--pn-text-width": textWidth === null ? "none" : `${textWidth}px` } as React.CSSProperties}>
       <header className="topbar" data-tauri-drag-region inert={modalOpen}>
         <div role="tablist" aria-label="Notizen" data-tauri-drag-region>
           {notes.notes.map((n) => (
@@ -117,8 +167,9 @@ export function App() {
             </div>
           ))}
         </div>
-        <button className="icon" aria-label="Neue Notiz" title="Neue Notiz (Strg/Cmd+N)" onClick={() => setNotes(addNote)}>+</button>
+        <button className="icon" aria-label="Neue Notiz" title="Neue Notiz (Cmd+T / Cmd+N)" onClick={() => setNotes(addNote)}>+</button>
         <span className="spacer" data-tauri-drag-region />
+        {copied && <span role="status" className="toast">{copied === "ok" ? "Als Markdown kopiert" : "Kopieren fehlgeschlagen"}</span>}
         {pendingCount > 0 && (
           <button className="badge" aria-label={`Ausstehend: ${pendingCount}`} title="Ausstehende Notizen" onClick={() => setPendingOpen(true)}>{pendingCount}</button>
         )}

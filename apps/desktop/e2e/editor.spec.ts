@@ -309,4 +309,33 @@ for (const [width, height] of [[375, 640], [768, 700], [1280, 800]]) {
   });
 }
 
+test("an empty bullet lines up with its siblings and text under a list is flush left", async ({ page }) => {
+  await page.goto("/");
+  await page.locator(".cm-content").click();
+  await page.keyboard.type("- 1", { delay: 10 });
+  await page.keyboard.press("Enter");
+  await page.keyboard.type("2", { delay: 10 });
+  await page.keyboard.press("Enter"); // empty "- " on the caret line
+  // the bullet glyph (right edge of its box content) and the caret column match the filled item
+  const geo = () =>
+    page.evaluate(() =>
+      [...document.querySelectorAll(".cm-line")].map((l) => {
+        const m = l.querySelector(".cm-atomic-list-marker") as HTMLElement;
+        const cs = getComputedStyle(m);
+        return Math.round(m.getBoundingClientRect().right - parseFloat(cs.paddingRight));
+      }),
+    );
+  const [first, second, empty] = await geo();
+  expect(empty).toBe(second);
+  expect(second).toBe(first);
+  // Backspace drops the empty marker; text typed there is lazy continuation of "2" but must not be indented
+  await page.keyboard.press("Backspace");
+  await page.keyboard.type("test", { delay: 10 });
+  const left = (i: number) => page.locator(".cm-line").nth(i).evaluate((l) => Math.round(l.getBoundingClientRect().left + parseFloat(getComputedStyle(l).paddingLeft)));
+  const first0 = await left(0);
+  expect(await left(2)).toBeLessThan(first0); // item content is indented, "test" is not
+  expect(await page.locator(".cm-line").nth(2).evaluate((l) => getComputedStyle(l).textIndent)).toBe("0px");
+  expect(await activeText(page)).toBe("- 1\n- 2\ntest");
+});
+
 test.use({ colorScheme: "light" });
