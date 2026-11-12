@@ -40,3 +40,41 @@ describe("audio block helpers", () => {
     expect(transcriptChange(link, "rec-2", "x")).toBeNull();
   });
 });
+
+describe("audio block state across an app restart (#5)", () => {
+  it("keeps collapse state and error text, drops what belongs to the run", async () => {
+    const m = await import("./audio-blocks");
+    localStorage.clear();
+    m.reloadAudioInfos();
+    m.patchAudio("rec-a", { collapsed: true });
+    m.patchAudio("rec-b", { transcribing: true });
+    m.patchAudio("rec-b", { transcribing: false, error: "WhisperStorm läuft nicht" });
+    m.patchAudio("rec-c", { playing: true });
+    expect(JSON.parse(localStorage.getItem(m.AUDIO_INFO_KEY)!)).toEqual({ "rec-a": { collapsed: true }, "rec-b": { error: "WhisperStorm läuft nicht" } });
+
+    m.reloadAudioInfos(); // the app starts again
+    expect(m.audioInfo("rec-a")).toEqual({ collapsed: true });
+    expect(m.audioInfo("rec-b")).toEqual({ error: "WhisperStorm läuft nicht" });
+    expect(m.audioInfo("rec-c")).toEqual({});
+
+    m.patchAudio("rec-a", { collapsed: false });
+    m.patchAudio("rec-b", { transcribing: true, error: undefined }); // retry clears the stored error
+    expect(JSON.parse(localStorage.getItem(m.AUDIO_INFO_KEY)!)).toEqual({});
+  });
+
+  it("survives broken stored state and caps the list", async () => {
+    const m = await import("./audio-blocks");
+    localStorage.setItem(m.AUDIO_INFO_KEY, "{not json");
+    m.reloadAudioInfos();
+    expect(m.audioInfo("x")).toEqual({});
+    localStorage.setItem(m.AUDIO_INFO_KEY, JSON.stringify({ a: { collapsed: "yes", error: 5 }, b: null, c: { error: "kaputt" } }));
+    m.reloadAudioInfos();
+    expect(m.audioInfo("a")).toEqual({});
+    expect(m.audioInfo("c")).toEqual({ error: "kaputt" });
+    for (let i = 0; i < 205; i++) m.patchAudio(`r${i}`, { collapsed: true });
+    const stored = Object.keys(JSON.parse(localStorage.getItem(m.AUDIO_INFO_KEY)!));
+    expect(stored).toHaveLength(200);
+    expect(stored).not.toContain("c");
+    expect(stored.at(-1)).toBe("r204");
+  });
+});

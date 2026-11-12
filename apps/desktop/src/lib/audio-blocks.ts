@@ -58,11 +58,41 @@ export interface AudioInfo {
   playing?: boolean;
   collapsed?: boolean;
 }
-const infos = new Map<string, AudioInfo>();
+// Collapse state and error text survive an app restart (#5), next to the notes in localStorage; `transcribing` and `playing` are of this run only.
+export const AUDIO_INFO_KEY = "pickynotes.audioInfo";
+const AUDIO_INFO_MAX = 200; // the oldest entries go first: blocks of notes sent long ago
+export function loadAudioInfos(): Map<string, AudioInfo> {
+  const map = new Map<string, AudioInfo>();
+  try {
+    const stored = JSON.parse(localStorage.getItem(AUDIO_INFO_KEY) ?? "{}") as Record<string, { collapsed?: unknown; error?: unknown }> | null;
+    for (const [id, v] of Object.entries(stored ?? {})) {
+      const info: AudioInfo = { ...(v?.collapsed === true ? { collapsed: true } : {}), ...(typeof v?.error === "string" && v.error ? { error: v.error } : {}) };
+      if (info.collapsed || info.error) map.set(id, info);
+    }
+  } catch {
+    // unreadable state: blocks start expanded and without an error, as before
+  }
+  return map;
+}
+function saveAudioInfos(): void {
+  const kept = [...infos].filter(([, i]) => i.collapsed || i.error).slice(-AUDIO_INFO_MAX);
+  try {
+    localStorage.setItem(AUDIO_INFO_KEY, JSON.stringify(Object.fromEntries(kept.map(([id, i]) => [id, { ...(i.collapsed ? { collapsed: true } : {}), ...(i.error ? { error: i.error } : {}) }]))));
+  } catch {
+    // storage full or unavailable: the state just does not survive a restart
+  }
+}
+let infos = loadAudioInfos();
+/** Tests: read the stored state again, as an app start does. */
+export const reloadAudioInfos = (): void => void (infos = loadAudioInfos());
 const listeners = new Set<() => void>();
 export const audioInfo = (id: string): AudioInfo => infos.get(id) ?? {};
 export function patchAudio(id: string, patch: AudioInfo): void {
-  infos.set(id, { ...audioInfo(id), ...patch });
+  const before = audioInfo(id);
+  const next = { ...before, ...patch };
+  infos.delete(id); // re-inserted at the end: recently touched blocks are kept longest
+  infos.set(id, next);
+  if (!!before.collapsed !== !!next.collapsed || (before.error ?? "") !== (next.error ?? "")) saveAudioInfos();
   listeners.forEach((l) => l());
 }
 export const subscribeAudio = (l: () => void): (() => void) => (listeners.add(l), () => void listeners.delete(l));
