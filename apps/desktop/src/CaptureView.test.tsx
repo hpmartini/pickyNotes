@@ -34,10 +34,11 @@ vi.mock("@atomic-editor/editor", async () => {
 vi.mock("@atomic-editor/editor/styles.css", () => ({}));
 // whisperstorm falls through to the real browser fallback unless a test queues replies.
 const ws = vi.hoisted(() => ({ replies: [] as Array<Record<string, unknown>>, calls: [] as string[] }));
+const stt = vi.hoisted(() => ({ reply: Promise.resolve({ ok: true, text: "" }) as Promise<{ ok: boolean; text?: string; error?: string }> }));
 const drafts = vi.hoisted(() => ({ store: undefined as import("./lib/drafts").DraftStore | undefined }));
 vi.mock("./lib/tauri", async (orig) => {
   const real = await orig<typeof import("./lib/tauri")>();
-  return { ...real, tauriDrafts: () => drafts.store, whisperstorm: (cmd: "start" | "stop" | "status") => (ws.calls.push(cmd), ws.replies.length ? Promise.resolve(ws.replies.shift()) : real.whisperstorm(cmd)) };
+  return { ...real, transcribeAudio: () => stt.reply, tauriDrafts: () => drafts.store, whisperstorm: (cmd: "start" | "stop" | "status") => (ws.calls.push(cmd), ws.replies.length ? Promise.resolve(ws.replies.shift()) : real.whisperstorm(cmd)) };
 });
 
 // The voice-note recorder needs a microphone; tests get one that records what happens to it.
@@ -687,5 +688,77 @@ describe("CaptureView voice note", () => {
   it("unmounting without a recording touches no recorder", () => {
     render(<Capture queue={new CaptureQueue(`c${n++}`)} send={vi.fn()} />).unmount();
     expect(mic.recorders).toHaveLength(0);
+  });
+});
+
+describe("CaptureView save and transcription (#3)", () => {
+  const block = (id: string) => `[🎙 Aufnahme 2026-10-21 14:03 (0:05)](pending:${id})`;
+  const fakeView = (doc: string) => {
+    const view = { state: { doc: { toString: () => doc } }, dispatch: vi.fn((tr: { changes: { from: number; to: number; insert: string } }) => void (doc = doc.slice(0, tr.changes.from) + tr.changes.insert + doc.slice(tr.changes.to))) };
+    return { view: view as unknown as import("@codemirror/view").EditorView, text: () => doc };
+  };
+
+  it("Save during 'Transkription läuft' waits, then sends once", async () => {
+    const { stashAttachment } = await import("./lib/attachments");
+    const { transcribeBlock } = await import("./lib/audio-blocks");
+    const { id } = await stashAttachment({ name: "a.m4a", mime: "audio/mp4", bytes: new Uint8Array([1]) });
+    let finish!: (r: { ok: boolean; text?: string }) => void;
+    stt.reply = new Promise((res) => (finish = res));
+    const editor = fakeView(block(id));
+    const running = transcribeBlock(editor.view, id);
+
+    const send = vi.fn(async () => ({ id: "x" }));
+    const note = { id: "n1", text: block(id) };
+    render(<CaptureView pendingOpen queue={new CaptureQueue(`c${n++}`)} send={send as never} notes={[note]} activeId="n1" onChange={vi.fn()} onSent={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Speichern" }));
+    fireEvent.click(screen.getByRole("button", { name: "Speichern" })); // impatient second click
+    await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Transkription läuft – Notiz wird danach gespeichert…"));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(send).not.toHaveBeenCalled();
+
+    finish({ ok: true, text: "hallo welt" });
+    await running;
+    expect(editor.text()).toBe(`${block(id)}\n> Transkript: hallo welt`); // the transcript reached the editor before the save
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+  });
+
+  it("Save without a running transcription sends right away; other notes' transcriptions do not hold it", async () => {
+    const { stashAttachment } = await import("./lib/attachments");
+    const { transcribeBlock, pendingTranscriptions } = await import("./lib/audio-blocks");
+    const { id } = await stashAttachment({ name: "b.m4a", mime: "audio/mp4", bytes: new Uint8Array([1]) });
+    let finish!: (r: { ok: boolean; error?: string }) => void;
+    stt.reply = new Promise((res) => (finish = res));
+    const running = transcribeBlock(fakeView(block(id)).view, id);
+    expect(pendingTranscriptions(block(id))).toHaveLength(1);
+    expect(pendingTranscriptions("andere Notiz")).toHaveLength(0);
+
+    const send = vi.fn(async () => ({ id: "x" }));
+    render(<CaptureView pendingOpen queue={new CaptureQueue(`c${n++}`)} send={send as never} notes={[{ id: "n1", text: "andere Notiz" }]} activeId="n1" onChange={vi.fn()} onSent={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Speichern" }));
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
+    finish({ ok: false, error: "WhisperStorm läuft nicht" });
+    await running; // a failed transcription settles too: nothing waits forever
+    expect(pendingTranscriptions(block(id))).toHaveLength(0);
+  });
+
+  it("a transcription that fails while Save waits does not send; the next Save does", async () => {
+    const { stashAttachment } = await import("./lib/attachments");
+    const { transcribeBlock } = await import("./lib/audio-blocks");
+    const { id } = await stashAttachment({ name: "c.m4a", mime: "audio/mp4", bytes: new Uint8Array([1]) });
+    let finish!: (r: { ok: boolean; error?: string }) => void;
+    stt.reply = new Promise((res) => (finish = res));
+    const running = transcribeBlock(fakeView(block(id)).view, id);
+
+    const send = vi.fn(async () => ({ id: "x" }));
+    render(<CaptureView pendingOpen queue={new CaptureQueue(`c${n++}`)} send={send as never} notes={[{ id: "n1", text: block(id) }]} activeId="n1" onChange={vi.fn()} onSent={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Speichern" }));
+    await waitFor(() => expect(screen.getByRole("status").textContent).toContain("Transkription läuft"));
+    finish({ ok: false, error: "WhisperStorm läuft nicht" });
+    await running;
+    await waitFor(() => expect(screen.getByRole("status").textContent).toContain("Transkription fehlgeschlagen – nicht gespeichert"));
+    expect(send).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Speichern" })); // conscious second Save: goes out without a transcript
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(1));
   });
 });

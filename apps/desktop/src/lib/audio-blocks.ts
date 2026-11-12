@@ -84,8 +84,19 @@ export async function togglePlay(id: string): Promise<void> {
   await el.play().catch(() => patchAudio(id, { playing: false }));
 }
 
+const running = new Map<string, Promise<void>>();
+/** Transcriptions still running for recordings linked in `text` (#3: Save waits for them, a sent note is never rewritten). They never reject. */
+export const pendingTranscriptions = (text: string): { id: string; done: Promise<void> }[] =>
+  [...running].filter(([id]) => text.includes(`(pending:${id})`)).map(([id, done]) => ({ id, done }));
+
 /** Sends the stashed recording to WhisperStorm and writes the text into the block. The recording stays whatever happens. */
-export async function transcribeBlock(view: EditorView, id: string): Promise<void> {
+export function transcribeBlock(view: EditorView, id: string): Promise<void> {
+  const p = transcribe(view, id).finally(() => running.get(id) === p && running.delete(id));
+  running.set(id, p);
+  return p;
+}
+
+async function transcribe(view: EditorView, id: string): Promise<void> {
   patchAudio(id, { transcribing: true, error: undefined });
   try {
     const a = await getAttachment(id);

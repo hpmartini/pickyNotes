@@ -10,7 +10,7 @@ import type { Note } from "./lib/notes";
 import { PendingModal } from "./PendingModal";
 import { dispatchInsertTable, editorExtensions, insertAttachmentAt, insertTextAtCursor } from "./lib/editor";
 import { AUDIO_MAX_SECONDS } from "@pickynotes/shared";
-import { audioExt, audioLabel, formatDuration, transcribeBlock } from "./lib/audio-blocks";
+import { audioExt, audioInfo, audioLabel, formatDuration, pendingTranscriptions, transcribeBlock } from "./lib/audio-blocks";
 import { startRecorder, type Recorder } from "./lib/recorder";
 
 const MAX_BYTES = 100 * 1024 * 1024; // sanity cap against freezing the webview; the server decides (413 above MAX_ATTACHMENT_MB without an object store)
@@ -48,6 +48,9 @@ export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled, 
   const text = notes.find((n) => n.id === activeId)?.text ?? "";
   const notesRef = useRef(notes);
   notesRef.current = notes;
+  const activeIdRef = useRef(activeId);
+  activeIdRef.current = activeId;
+  const sending = useRef(false); // Save is waiting for a transcription: a second click must not send twice
   const [status, setStatus] = useState("");
   const [recording, setRecording] = useState(false);
   const [starting, setStarting] = useState(false); // start can wait on the microphone prompt for up to 30 s
@@ -136,9 +139,22 @@ export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled, 
   }
 
   async function sendText() {
-    if (!text.trim()) return;
-    const sent = text;
+    if (!text.trim() || sending.current) return;
     const id = activeId;
+    let sent = text;
+    // #3: a sent note is never rewritten, so Save waits for a transcription that is still running.
+    const waiting = pendingTranscriptions(text);
+    if (waiting.length) {
+      sending.current = true;
+      setStatus("Transkription läuft – Notiz wird danach gespeichert…");
+      await Promise.all(waiting.map((w) => w.done)).finally(() => (sending.current = false));
+      // A failed transcription must not slip the note out without its transcript: the user decides (retry in the block, or Save again).
+      if (waiting.some((w) => audioInfo(w.id).error)) return setStatus("Transkription fehlgeschlagen – nicht gespeichert. Im Block erneut transkribieren oder noch einmal Speichern (dann ohne Transkript).");
+      setStatus("");
+      // The transcript went into the editor, not into this render's `text`.
+      sent = (activeIdRef.current === id ? getView()?.state.doc.toString() : undefined) ?? notesRef.current.find((n) => n.id === id)?.text ?? text;
+      if (!sent.trim()) return;
+    }
     // The user may keep typing, or switch tabs, while the send is pending; close only if that note still holds what was sent. A rejected draft stays.
     const attachments = await readAttachmentsForSend(sent);
     if (await submit({ kind: "text", source: "typed", text: sent, ...(attachments.length ? { attachments } : {}) })) {
