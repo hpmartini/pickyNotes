@@ -40,7 +40,20 @@ vi.mock("./lib/tauri", async (orig) => {
   return { ...real, tauriDrafts: () => drafts.store, whisperstorm: (cmd: "start" | "stop" | "status") => (ws.calls.push(cmd), ws.replies.length ? Promise.resolve(ws.replies.shift()) : real.whisperstorm(cmd)) };
 });
 
-afterEach(() => (cleanup(), localStorage.clear(), (ws.calls.length = 0), (ws.replies.length = 0)));
+// The voice-note recorder needs a microphone; tests get one that records what happens to it.
+const mic = vi.hoisted(() => ({ recorders: [] as Array<{ stop: ReturnType<typeof import("vitest").vi.fn>; cancel: ReturnType<typeof import("vitest").vi.fn> }> }));
+vi.mock("./lib/recorder", async () => {
+  const { vi } = await import("vitest");
+  return {
+    startRecorder: async () => {
+      const r = { stop: vi.fn(async () => ({ bytes: new Uint8Array([1]), mime: "audio/mp4" })), cancel: vi.fn() };
+      mic.recorders.push(r);
+      return r;
+    },
+  };
+});
+
+afterEach(() => (cleanup(), localStorage.clear(), (ws.calls.length = 0), (ws.replies.length = 0), (mic.recorders.length = 0)));
 let n = 0;
 
 /** CaptureView is controlled by App; this keeps one note in state like App does. */
@@ -647,5 +660,32 @@ describe("App shell", () => {
       render(<App />);
       expect((document.querySelector("main") as HTMLElement).style.getPropertyValue("--pn-text-width")).toBe("640px");
     });
+  });
+});
+
+describe("CaptureView voice note", () => {
+  it("unmounting mid-recording releases the microphone and stops both timers (#4)", async () => {
+    const clearInterval = vi.spyOn(window, "clearInterval");
+    const clearTimeout = vi.spyOn(window, "clearTimeout");
+    const setInterval = vi.spyOn(window, "setInterval");
+    const setTimeout = vi.spyOn(window, "setTimeout");
+    const r = render(<Capture queue={new CaptureQueue(`c${n++}`)} send={vi.fn()} />);
+    fireEvent.click(screen.getByTitle("Sprachnotiz aufnehmen (max. 10 min)"));
+    await waitFor(() => expect(mic.recorders).toHaveLength(1));
+    await waitFor(() => expect(screen.getByTitle("Sprachnotiz aufnehmen (max. 10 min)").getAttribute("aria-pressed")).toBe("true"));
+    const tick = setInterval.mock.results.at(-1)!.value as number;
+    const limit = setTimeout.mock.calls.findIndex(([, ms]) => ms === 600_000);
+    expect(limit).toBeGreaterThanOrEqual(0);
+    r.unmount();
+    expect(mic.recorders[0]!.cancel).toHaveBeenCalledTimes(1);
+    expect(mic.recorders[0]!.stop).not.toHaveBeenCalled(); // nothing is saved from a view that is gone
+    expect(clearInterval).toHaveBeenCalledWith(tick);
+    expect(clearTimeout).toHaveBeenCalledWith(setTimeout.mock.results[limit]!.value);
+    vi.restoreAllMocks();
+  });
+
+  it("unmounting without a recording touches no recorder", () => {
+    render(<Capture queue={new CaptureQueue(`c${n++}`)} send={vi.fn()} />).unmount();
+    expect(mic.recorders).toHaveLength(0);
   });
 });

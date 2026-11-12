@@ -2,6 +2,8 @@ import { pickRecorderMime } from "./audio-blocks";
 
 export interface Recorder {
   stop: () => Promise<{ bytes: Uint8Array; mime: string }>;
+  /** Drop the recording and release the microphone (the view went away mid-recording). */
+  cancel: () => void;
 }
 
 /** Records the microphone with MediaRecorder (the webview's own; WhisperStorm is not involved). */
@@ -24,6 +26,11 @@ export async function startRecorder(): Promise<Recorder> {
           };
           rec.stop();
         }),
+      cancel: () => {
+        rec.ondataavailable = rec.onstop = rec.onerror = null;
+        if (rec.state !== "inactive") rec.stop();
+        stream.getTracks().forEach((t) => t.stop());
+      },
     };
   } catch (e) {
     stream.getTracks().forEach((t) => t.stop());
