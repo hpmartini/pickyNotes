@@ -4,7 +4,7 @@ import { CaptureView } from "./CaptureView";
 import { activeNote, addNote, closeNote, jumpNote, loadNotes, newNote, noteTitle, saveNotes, setNoteText, stepNote, type NotesState } from "./lib/notes";
 import { CaptureQueue } from "./lib/queue";
 import { jumpIndex, keydownToAccelerator, loadHotkeys, loadShortcuts, loadTextWidth, saveTextWidth } from "./lib/settings";
-import { applyHotkeys, inTauri, revealOutbox, screenshot, setCornerRadius, tauriDrafts, tauriOutbox, token } from "./lib/tauri";
+import { applyHotkeys, inTauri, openIcs, revealOutbox, screenshot, setCornerRadius, tauriDrafts, tauriOutbox, token, vaultWrite } from "./lib/tauri";
 import { createDraftSaver, restoreDrafts } from "./lib/drafts";
 import { SearchView } from "./SearchView";
 import { SettingsModal, URL_KEY } from "./SettingsModal";
@@ -180,6 +180,8 @@ export function App() {
         queue={queue}
         send={send}
         screenshot={screenshot}
+        vault={inTauri() ? vaultWrite : undefined}
+        openIcs={inTauri() ? openIcs : undefined}
         configured={configured}
         onOpenAsNote={openAsNote}
         onRevealOutbox={inTauri() ? () => void revealOutbox() : undefined}

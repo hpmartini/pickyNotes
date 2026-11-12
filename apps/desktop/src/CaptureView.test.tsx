@@ -89,6 +89,60 @@ describe("CaptureView", () => {
     expect(await getAttachment(own.id)).toBeUndefined();
   });
 
+  it("#15: Vault writes the note into the inbox, names the file in the status and keeps the note open", async () => {
+    const vault = vi.fn(async (name: string) => `${name}-2.md`);
+    render(<Capture queue={new CaptureQueue(`c${n++}`)} send={vi.fn()} vault={vault} />);
+    const button = screen.getByRole("button", { name: "Vault" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText("Editor"), { target: { value: "Idee\nmehr" } });
+    fireEvent.click(button);
+    await waitFor(() => expect(screen.getByRole("status").textContent).toMatch(/^In der Vault: raw\/\d{4}-\d{2}-\d{2}-\d{4}-idee-2\.md$/));
+    expect(vault).toHaveBeenCalledWith(expect.stringMatching(/^\d{4}-\d{2}-\d{2}-\d{4}-idee$/), expect.stringMatching(/^---\nquelle: pickyNotes\nerstellt: .+\n---\n\nIdee\nmehr\n$/));
+    expect((screen.getByLabelText("Editor") as HTMLTextAreaElement).value).toBe("Idee\nmehr");
+  });
+
+  it("#15: a note with app-only attachments is not written, and a failing vault says why", async () => {
+    const vault = vi.fn(async () => Promise.reject(new Error("Vault-Eingang fehlt: /x/MAGOS/raw")));
+    render(<Capture queue={new CaptureQueue(`c${n++}`)} send={vi.fn()} vault={vault} />);
+    fireEvent.change(screen.getByLabelText("Editor"), { target: { value: "a ![b](pending:x1)" } });
+    fireEvent.click(screen.getByRole("button", { name: "Vault" }));
+    await waitFor(() => expect(screen.getByRole("status").textContent).toMatch(/^Notiz hat Anhänge/));
+    expect(vault).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("Editor"), { target: { value: "ohne" } });
+    fireEvent.click(screen.getByRole("button", { name: "Vault" }));
+    await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Nicht in der Vault abgelegt (Vault-Eingang fehlt: /x/MAGOS/raw)"));
+    expect((screen.getByLabelText("Editor") as HTMLTextAreaElement).value).toBe("ohne");
+  });
+
+  it("#16: Termin opens a prefilled dialog and hands the event to the calendar; the note stays", async () => {
+    const openIcs = vi.fn(async (_ics: string) => {});
+    render(<Capture queue={new CaptureQueue(`c${n++}`)} send={vi.fn()} openIcs={openIcs} />);
+    fireEvent.change(screen.getByLabelText("Editor"), { target: { value: "Zahnarzt\nUm Rückruf bitten" } });
+    fireEvent.click(screen.getByRole("button", { name: "Termin" }));
+    const dialog = within(screen.getByRole("dialog", { name: "Termin aus Notiz" }));
+    expect((dialog.getByLabelText("Titel") as HTMLInputElement).value).toBe("Zahnarzt");
+    const create = dialog.getByRole("button", { name: "Termin anlegen" }) as HTMLButtonElement;
+    fireEvent.change(dialog.getByLabelText("Titel"), { target: { value: " " } });
+    expect(create.disabled).toBe(true);
+    fireEvent.change(dialog.getByLabelText("Titel"), { target: { value: "Zahnarzt anrufen" } });
+    fireEvent.change(dialog.getByLabelText("Datum"), { target: { value: "2026-12-01" } });
+    fireEvent.change(dialog.getByLabelText("Beginn"), { target: { value: "14:30" } });
+    fireEvent.change(dialog.getByLabelText("Dauer (Minuten)"), { target: { value: "45" } });
+    fireEvent.click(create);
+    await waitFor(() => expect(screen.getByRole("status").textContent).toBe("Termin an Kalender übergeben"));
+    const ics = openIcs.mock.calls[0]![0];
+    expect(ics).toContain("SUMMARY:Zahnarzt anrufen\r\nDESCRIPTION:Zahnarzt\\nUm Rückruf bitten\r\n");
+    expect(ics).toContain("DTSTART:20261201T143000\r\nDTEND:20261201T151500\r\n");
+    expect(screen.queryByRole("dialog", { name: "Termin aus Notiz" })).toBeNull();
+    expect((screen.getByLabelText("Editor") as HTMLTextAreaElement).value).toBe("Zahnarzt\nUm Rückruf bitten");
+  });
+
+  it("#15/#16: without the Tauri bridge (browser) there is no Vault or Termin button", () => {
+    render(<Capture queue={new CaptureQueue(`c${n++}`)} send={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: "Vault" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Termin" })).toBeNull();
+  });
+
   it("keeps the same editor instance (and focus) while typing", () => {
     editorMounts.count = 0;
     render(<Capture queue={new CaptureQueue(`c${n++}`)} send={vi.fn()} />);
