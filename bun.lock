@@ -90,7 +90,9 @@
     },
   },
   "trustedDependencies": [
+    "esbuild",
     "onnxruntime-node",
+    "sharp",
   ],
   "overrides": {
     "vite": "^6.0.0",
