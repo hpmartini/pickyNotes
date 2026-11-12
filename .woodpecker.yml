@@ -7,9 +7,11 @@ steps:
   - name: install
     image: node:22-bookworm
     commands:
-      - npm ci --include=dev
+      - npm install -g bun@1.4.4
+      - bun install --frozen-lockfile
 
   - name: typecheck
     image: node:22-bookworm
     commands:
-      - npm run typecheck
+      - npm install -g bun@1.4.4
+      - bun run typecheck

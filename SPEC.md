@@ -38,10 +38,10 @@ Mail-Eingang: `POST /captures/mail` (Bearer-Gerätetoken, `{from, subject, text,
 ## Setup (lokal)
 
 ```sh
-npm install
+bun install
 docker run -d --name picky-pg -e POSTGRES_PASSWORD=dev -p 5544:5432 pgvector/pgvector:pg16    # 5432 ist oft belegt
 DATABASE_URL=postgres://postgres:dev@localhost:5544/postgres VAULT_PATH=$HOME/vault \
-  ADMIN_ALLOWLIST=127.0.0.1,::1 npm start -w @pickynotes/server
+  ADMIN_ALLOWLIST=127.0.0.1,::1 bun run --filter @pickynotes/server start
 curl -XPOST localhost:8787/admin/devices -H 'content-type: application/json' -d '{"name":"mac"}'   # Token, nur einmal sichtbar
 ```
 
@@ -58,7 +58,7 @@ docker run -d --name picky-whisper -p 127.0.0.1:8000:8000 ghcr.io/speaches-ai/sp
 #   → WHISPER_URL=http://127.0.0.1:8000/v1/audio/transcriptions   (WHISPER_API=openai, WHISPER_MODEL=Systran/faster-whisper-small)
 ```
 
-`npm run typecheck` und `npm test` brauchen weder Postgres noch Netz. Postgres-Integrationstests: `DATABASE_URL=postgres://postgres:dev@localhost:5544/picky_test npm test -w @pickynotes/server` (**löscht das Schema `public`** der angegebenen DB, nur Wegwerf-DB wie `picky_test` verwenden, nie die Dev-DB).
+`bun run typecheck` und `bun run test` brauchen weder Postgres noch Netz. Postgres-Integrationstests: `DATABASE_URL=postgres://postgres:dev@localhost:5544/picky_test bun run --filter @pickynotes/server test` (**löscht das Schema `public`** der angegebenen DB, nur Wegwerf-DB wie `picky_test` verwenden, nie die Dev-DB).
 
 Editor-Test mit dem echten Atomic Editor/CodeMirror (kein Mock, jsdom): `node node_modules/vitest/vitest.mjs run --root apps/desktop src/editor.test.tsx`.
 
@@ -92,13 +92,13 @@ docker compose --profile s3 --profile whisper up -d    # danach S3_ENDPOINT=http
   2. **S3-Bucket** bzw. Volume `s3data`, wenn `S3_ENDPOINT` gesetzt ist: dort liegen die **einzigen Originale** großer Anhänge (der Vault hält nur Link + Extrakt). Restore: Volume/Bucket zurückspielen, gleiche Bucket-Namen und Keys (`attachments/<id>/<name>`).
   3. **`pg_dump` ist Pflicht, nicht optional.** Aus dem Vault nicht neu aufbaubar sind: Entscheidungen der Vorschlags-Queue (`suggestions`, accepted/dismissed), die Konflikt-Historie (`conflicts`), Geräte-Token, Webhooks, `@claude`-Ausführungsstand (`claude_instructions`, Exactly-once) und die Capture-Dedupe (`client_id`). Dump: `docker compose exec db pg_dump -U postgres -Fc pickynotes > picky.dump`. Restore: `pg_restore --clean --if-exists -d pickynotes picky.dump` (im `db`-Container), danach Server starten (Migrationen laufen beim Start). Die Queue-Tabellen (`pgboss`) liegen in derselben DB.
   Reihenfolge beim Restore: DB, dann Vault/Bucket, dann `POST /admin/reindex` (behält `client_id`; Zeilen auf bewegte Pfade werden korrigiert).
-- **Spec:** `GET /openapi.json`; `npm run openapi` schreibt `packages/server/openapi.json` (ein Test prüft, dass die eingecheckte Datei dem Code entspricht).
+- **Spec:** `GET /openapi.json`; `bun run openapi` schreibt `packages/server/openapi.json` (ein Test prüft, dass die eingecheckte Datei dem Code entspricht).
 
 ## CLI
 
 ```sh
 export PICKY_URL=https://notes.example.net PICKY_TOKEN=pk_…   # oder ~/.config/pickynotes/config.json {"url","token"}
-npx tsx packages/cli/src/index.ts add "Gedanke"       # oder per stdin; bin: `note`
+bunx tsx packages/cli/src/index.ts add "Gedanke"       # oder per stdin; bin: `note`
 note search rotes Auto [--json] [-n 5]
 note context --repo .     # Repo-Name aus git remote, sonst Ordnername
 ```
@@ -106,8 +106,8 @@ note context --repo .     # Repo-Name aus git remote, sonst Ordnername
 ## Desktop (macOS)
 
 ```sh
-npm run tauri dev -w @pickynotes/desktop     # braucht Rust (rustup)
-npm run tauri build -w @pickynotes/desktop   # .app/.dmg
+bun run --filter @pickynotes/desktop tauri dev     # braucht Rust (rustup)
+bun run --filter @pickynotes/desktop tauri build   # .app/.dmg
 ```
 
 **Fenster:** ohne Titelleiste (die schmale obere Leiste ist der Ziehbereich), immer im Vordergrund und auf allen Spaces, unter macOS auch über Vollbild-Apps. **Notiz-Tabs:** `Cmd/Ctrl+N` öffnet eine neue Notiz als Tab (Titel = erste Zeile), jeder Tab hat ein ×; Entwürfe bleiben über Neustarts erhalten (localStorage `picky.notes`, der frühere Einzel-Entwurf `picky.draft` wandert in den ersten Tab). „Speichern“ sendet die aktive Notiz und schließt den Tab (der letzte wird geleert). Das Lupen-Icon oben rechts öffnet die Suche als schließbares Panel. Der Editor nutzt die volle Fensterbreite.
@@ -157,7 +157,7 @@ Sprache (Tauri): ein WhisperStorm-Socket (`~/Library/Application Support/Whisper
 - Stürzt ein Text-Capture zwischen dem Schreiben der Datei und dem Anlegen der DB-Zeile ab, kennt der Retry die `clientId` noch nicht (sie steht nur in der Zeile) und legt eine zweite Notiz mit neuer id an. Enger als der gefixte `queue.send`-Fall; Abhilfe wäre die `clientId` im Frontmatter.
 - Vorschläge werden vor dem Schreiben von `status: curated` in die DB gelegt (Retry-fest); stürzt `curate` zwischen DB-Insert und Webhook ab, geht das `suggestion.created`-Event für diese Vorschläge verloren (die Vorschläge selbst nicht).
 - Abgelehnte Captures (4xx außer 401/429) bleiben in der Desktop-Warteschlange und sind im Ausstehend-Dialog unter „Abgelehnt“ mit „Erneut senden“/„Verwerfen“ sichtbar; der Entwurf im Editor bleibt erhalten. Nicht zustellbare (offline, 401/429/5xx, Konfiguration fehlt) stehen im Ausstehend-Dialog unter „Wartet auf Versand“. Die Outbox-Datei enthält den Notiztext samt Anhängen im Klartext; wer das nicht will, löscht den Ordner (die Queue in der IndexedDB bleibt).
-- Postgres-Pfad (`PgRepo`, Migrationen 001–004) ist gegen `pgvector/pgvector:pg16` in der Wegwerf-DB `picky_test` geprüft (`DATABASE_URL=… npm test -w @pickynotes/server`); die Gates selbst laufen ohne DB.
+- Postgres-Pfad (`PgRepo`, Migrationen 001–004) ist gegen `pgvector/pgvector:pg16` in der Wegwerf-DB `picky_test` geprüft (`DATABASE_URL=… bun run --filter @pickynotes/server test`); die Gates selbst laufen ohne DB.
 - Dev-Abhängigkeiten melden `npm audit`-Funde (vitest/tinypool, sharp via transformers.js); vor produktivem Einsatz prüfen.
 
 ## Vertagt / nicht machbar
@@ -170,7 +170,7 @@ Nichts davon wurde stillschweigend weggelassen; jeder Punkt hat einen Grund und,
 | `claude -p` mit Headless-Login im Container | Lokal verifiziert (Kuratierung per `claude -p` mit deiner Subscription, siehe JOURNAL). Im Container braucht es einen einmaligen interaktiven Login (`docker compose exec -it server claude`), den niemand für dich tippen kann. | Login-Schritt; danach Test-Notiz erfassen, `status: curated` prüfen. |
 | WhisperStorm-„REST-API“ | Erledigt (Runde 3): WhisperStorm spricht jetzt einen lokalen Unix-Socket (`Sources/App/ControlSocketServer.swift`), pickyNotes bindet ihn über `src-tauri/src/lib.rs::whisperstorm` und ein TypeScript-Wrapper. Der `whisperstorm`-Modus im Server (`WHISPER_API=whisperstorm`) bleibt optional und ist unbenutzt. | — |
 | Whisper-Modell `small` im Compose | Echter Lauf verifiziert mit `Systran/faster-whisper-base` (siehe JOURNAL); `small` wurde auf dem Mac vom OOM-Killer beendet (Docker-VM 6 GB, geteilt mit vielen Containern). | Auf dem VPS mit genug RAM `WHISPER_MODEL=Systran/faster-whisper-small` (Default) nutzen, sonst `…-base`. |
-| Bedienung des nativen Tauri-Fensters (Tippen, Hotkey, Mikrofon, Screenshot) | Die App startet (`tauri dev`, Fenster mit Tabs sichtbar), aber ein Skript kann das native Fenster hier nicht bedienen: Bildschirm gesperrt, keine Bedienungshilfen-/Apple-Events-Berechtigung. Hotkey, Schlüsselbund, `screencapture` und Mikrofon sind nur im nativen Fenster erreichbar. Der Web-Teil (derselbe Code im WebView) ist in echtem Chromium automatisiert getestet (`npm run e2e -w @pickynotes/desktop`, Gate). `tauri build` (.app/.dmg) wurde nicht gebaut. | Einmal von Hand: `npm run tauri dev -w @pickynotes/desktop`, Hotkey, Sprache, Screenshot, Datei probieren. |
+| Bedienung des nativen Tauri-Fensters (Tippen, Hotkey, Mikrofon, Screenshot) | Die App startet (`tauri dev`, Fenster mit Tabs sichtbar), aber ein Skript kann das native Fenster hier nicht bedienen: Bildschirm gesperrt, keine Bedienungshilfen-/Apple-Events-Berechtigung. Hotkey, Schlüsselbund, `screencapture` und Mikrofon sind nur im nativen Fenster erreichbar. Der Web-Teil (derselbe Code im WebView) ist in echtem Chromium automatisiert getestet (`bun run --filter @pickynotes/desktop e2e`, Gate). `tauri build` (.app/.dmg) wurde nicht gebaut. | Einmal von Hand: `bun run --filter @pickynotes/desktop tauri dev`, Hotkey, Sprache, Screenshot, Datei probieren. |
 | Spec-Punkte 7a/7b/13b/17b | Das Briefing nennt sie, die Spec (Claude-Docs-Artefakt) hat aber keine so nummerierten Punkte; sie enthält nur zwei offene Punkte: Produktname „pickyNotes“ bestätigen und Referenz der `wiki_*`-Kontexte. Beide änderten hier weder Architektur noch Datenmodell. | Produktname und `wiki_*`-Kontexte bestätigen. |
 ## Außerhalb des Briefing-Umfangs (nicht vertagt, nicht beauftragt)
 
@@ -178,4 +178,4 @@ Das Briefing verlangt „Backend-Dienst und macOS-Desktop-App“ sowie CLI. Nich
 
 ## Tests
 
-`npm run typecheck`, `npm test` (Unit/Integration, ohne Netz) und `npm run e2e -w @pickynotes/desktop` (Playwright, echtes Chromium; einmalig `node node_modules/@playwright/test/cli.js install chromium`). Der e2e-Test deckt Fokus beim Tippen, Bullet-Listen (Enter/Tab), Lesbarkeit der Schrift und den erhaltenen Entwurf nach Tab-Wechsel ab (plus `e2e/shell.spec.ts`: Einstellungen-Dialog, Kürzel, Dock/Menüleiste, Notiz-Tabs, Suchpanel); ohne den Fix (`documentId` in `CaptureView`) schlägt er fehl.
+`bun run typecheck`, `bun run test` (Unit/Integration, ohne Netz) und `bun run --filter @pickynotes/desktop e2e` (Playwright, echtes Chromium; einmalig `node node_modules/@playwright/test/cli.js install chromium`). Der e2e-Test deckt Fokus beim Tippen, Bullet-Listen (Enter/Tab), Lesbarkeit der Schrift und den erhaltenen Entwurf nach Tab-Wechsel ab (plus `e2e/shell.spec.ts`: Einstellungen-Dialog, Kürzel, Dock/Menüleiste, Notiz-Tabs, Suchpanel); ohne den Fix (`documentId` in `CaptureView`) schlägt er fehl.

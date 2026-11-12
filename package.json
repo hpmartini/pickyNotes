@@ -3,13 +3,16 @@
   "private": true,
   "license": "MIT",
   "type": "module",
+  "packageManager": "bun@1.4.4",
   "workspaces": ["packages/*", "apps/*"],
   "scripts": {
-    "typecheck": "npm run typecheck -ws --if-present",
-    "test": "npm test -ws --if-present",
-    "build": "npm run build -ws --if-present",
-    "openapi": "npm run openapi -w @pickynotes/server"
+    "typecheck": "bun run --workspaces --if-present typecheck",
+    "test": "bun run --workspaces --if-present test",
+    "build": "bun run --workspaces --if-present build",
+    "openapi": "bun run --filter @pickynotes/server openapi"
   },
+  "trustedDependencies": ["onnxruntime-node"],
+  "overrides": { "vite": "^6.0.0" },
   "devDependencies": {
     "@types/node": "^22.10.0",
     "tsx": "^4.19.0",

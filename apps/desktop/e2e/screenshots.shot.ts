@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { mockTauri } from "./helpers";
 
-// Not part of the e2e gate: `npm run screenshots -w @pickynotes/desktop` renders the README images from demo data.
+// Not part of the e2e gate: `bun run --filter @pickynotes/desktop screenshots` renders the README images from demo data.
 const OUT = "../../docs/screenshots";
 
 const NOTES = [
