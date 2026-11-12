@@ -37,23 +37,23 @@ A capture-first note app for people who think faster than they file. Jot a thoug
 
 ## Quick start
 
-Requirements: Node 22, Docker (for Postgres), Rust (only for the desktop app), macOS for the desktop app.
+Requirements: Node 22, Bun 1.4 (package manager), Docker (for Postgres), Rust (only for the desktop app), macOS for the desktop app.
 
 ```sh
 git clone https://github.com/hpmartini/pickyNotes.git && cd pickyNotes
-npm install
+bun install
 
 # server (Postgres with pgvector, then the API)
 docker run -d --name picky-pg -e POSTGRES_PASSWORD=dev -p 5544:5432 pgvector/pgvector:pg16
 DATABASE_URL=postgres://postgres:dev@localhost:5544/postgres VAULT_PATH=$HOME/vault \
-  ADMIN_ALLOWLIST=127.0.0.1,::1 npm start -w @pickynotes/server
+  ADMIN_ALLOWLIST=127.0.0.1,::1 bun run --filter @pickynotes/server start
 
 # a device token (shown once)
 curl -XPOST localhost:8787/admin/devices -H 'content-type: application/json' -d '{"name":"mac"}'
 
 # desktop app: dev mode, or a .app bundle in apps/desktop/src-tauri/target/release/bundle
-npm run tauri dev -w @pickynotes/desktop
-npm run tauri build -w @pickynotes/desktop -- --bundles app
+bun run --filter @pickynotes/desktop tauri dev
+bun run --filter @pickynotes/desktop tauri build --bundles app
 ```
 
 Enter the server URL and the token under **Settings** (`Cmd+,`). The first search downloads the embedding model.
@@ -62,8 +62,8 @@ CLI:
 
 ```sh
 export PICKY_URL=http://127.0.0.1:8787 PICKY_TOKEN=pk_…
-npx tsx packages/cli/src/index.ts add "a thought"
-npx tsx packages/cli/src/index.ts search red car
+bunx tsx packages/cli/src/index.ts add "a thought"
+bunx tsx packages/cli/src/index.ts search red car
 ```
 
 Docker Compose deployment, backups, S3 attachments, Whisper and all settings: see [SPEC.md](SPEC.md) (German).
@@ -71,11 +71,11 @@ Docker Compose deployment, backups, S3 attachments, Whisper and all settings: se
 ## Development
 
 ```sh
-npm run typecheck
-npm test                                  # unit and integration tests, no network or database needed
-npm run e2e -w @pickynotes/desktop        # Playwright against the real web bundle (first: npx playwright install chromium)
+bun run typecheck
+bun run test                                # unit and integration tests, no network or database needed
+bun run --filter @pickynotes/desktop e2e       # Playwright against the real web bundle (first: bunx playwright install chromium)
 cd apps/desktop/src-tauri && cargo test
-npm run screenshots -w @pickynotes/desktop   # regenerates docs/screenshots from demo data
+bun run --filter @pickynotes/desktop screenshots   # regenerates docs/screenshots from demo data
 ```
 
 ## Documentation

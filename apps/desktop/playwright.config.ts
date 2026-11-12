@@ -4,5 +4,5 @@ import { defineConfig } from "@playwright/test";
 export default defineConfig({
   testDir: "e2e",
   use: { baseURL: "http://localhost:1421", headless: true },
-  webServer: { command: "npx vite --port 1421 --strictPort", url: "http://localhost:1421", reuseExistingServer: false, timeout: 60_000 },
+  webServer: { command: "bunx vite --port 1421 --strictPort", url: "http://localhost:1421", reuseExistingServer: false, timeout: 60_000 },
 });

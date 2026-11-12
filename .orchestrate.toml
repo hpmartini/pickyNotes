@@ -1,8 +1,8 @@
-# Gates for `mw orchestrate` runs on this repo (TypeScript npm-workspaces monorepo).
+# Gates for `mw orchestrate` runs on this repo (TypeScript Bun workspaces monorepo).
 gate_timeout = 900
 gates = [
-  ["npm", "run", "typecheck"],
-  ["npm", "test"],
-  # real Chromium against the Vite dev server; needs `npx playwright install chromium` once
-  ["npm", "run", "e2e", "-w", "@pickynotes/desktop"],
+  ["bun", "run", "typecheck"],
+  ["bun", "run", "test"],
+  # real Chromium against the Vite dev server; needs `bunx playwright install chromium` once
+  ["bun", "run", "--filter", "@pickynotes/desktop", "e2e"],
 ]
