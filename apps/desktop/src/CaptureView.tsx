@@ -12,6 +12,8 @@ import { dispatchInsertTable, editorExtensions, insertAttachmentAt, insertTextAt
 import { AUDIO_MAX_SECONDS } from "@pickynotes/shared";
 import { audioExt, audioInfo, audioLabel, formatDuration, pendingTranscriptions, transcribeBlock } from "./lib/audio-blocks";
 import { startRecorder, type Recorder } from "./lib/recorder";
+import { buildIcs, hasLocalAttachments, vaultFile, type Termin } from "./lib/export";
+import { TerminModal } from "./TerminModal";
 
 const MAX_BYTES = 100 * 1024 * 1024; // sanity cap against freezing the webview; the server decides (413 above MAX_ATTACHMENT_MB without an object store)
 
@@ -19,6 +21,10 @@ interface Props {
   queue: CaptureQueue;
   send: Send;
   screenshot?: () => Promise<string | null>;
+  /** Writes a Markdown file into the MAGOS vault inbox and returns the file name used (Tauri only). */
+  vault?: (name: string, markdown: string) => Promise<string>;
+  /** Hands an iCalendar text to the calendar app (Tauri only). */
+  openIcs?: (ics: string) => Promise<void>;
   /** Global hotkey request: focus the editor, and start/stop dictation when `toggle`. */
   hotkey?: { toggle: boolean } | null;
   onHotkeyHandled?: () => void;
@@ -44,7 +50,7 @@ interface Props {
 
 const MISSING_CONFIG = "Server-URL/Token fehlen – Notiz liegt im Postausgang";
 
-export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled, notes, activeId, onChange, onSent, inert, configured, onOpenAsNote, onRevealOutbox, pendingOpen, onClosePending }: Props) {
+export function CaptureView({ queue, send, screenshot, vault, openIcs, hotkey, onHotkeyHandled, notes, activeId, onChange, onSent, inert, configured, onOpenAsNote, onRevealOutbox, pendingOpen, onClosePending }: Props) {
   const text = notes.find((n) => n.id === activeId)?.text ?? "";
   const notesRef = useRef(notes);
   notesRef.current = notes;
@@ -57,6 +63,7 @@ export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled, 
   const [audioElapsed, setAudioElapsed] = useState<number | null>(null); // seconds while a voice note is being recorded
   const audioRec = useRef<{ recorder: Recorder; startedAt: number; tick: number; limit: number } | null>(null);
   const [items, setItems] = useState<QueuedCapture[]>([]);
+  const [terminOpen, setTerminOpen] = useState(false);
   const rejected = items.filter((i) => i.rejected);
   const pending = items.filter((i) => !i.rejected);
   const editorRef = useRef<AtomicCodeMirrorEditorHandle | null>(null);
@@ -164,6 +171,29 @@ export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled, 
       if (notesRef.current.find((n) => n.id === id)?.text === sent) {
         onSent(id);
       }
+    }
+  }
+
+  /** #15: the note goes into the vault inbox as it is and stays open; the server copy (Speichern) is independent of it. */
+  async function toVault() {
+    if (!vault || !text.trim()) return;
+    if (hasLocalAttachments(text)) return setStatus("Notiz hat Anhänge – die liegen nur in der App. Ohne Anhänge ablegen oder Speichern.");
+    try {
+      const { name, markdown } = vaultFile(text, new Date());
+      setStatus(`In der Vault: raw/${await vault(name, markdown)}`);
+    } catch (e) {
+      setStatus(`Nicht in der Vault abgelegt (${e instanceof Error ? e.message : e})`);
+    }
+  }
+
+  /** #16: the event goes to the calendar app as an .ics file; the note stays as it is. */
+  async function createTermin(t: Termin) {
+    setTerminOpen(false);
+    try {
+      await openIcs?.(buildIcs(t, text, new Date()));
+      setStatus("Termin an Kalender übergeben");
+    } catch (e) {
+      setStatus(`Termin nicht angelegt (${e instanceof Error ? e.message : e})`);
     }
   }
 
@@ -296,7 +326,7 @@ export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled, 
 
   return (
     <>
-    <section aria-label="Erfassen" inert={inert}>
+    <section aria-label="Erfassen" inert={inert || terminOpen}>
       <div className="editor">
         <AtomicCodeMirrorEditor
           documentId={activeId} // the editor reads markdownSource only at mount; a stable id per note keeps focus while typing, a new note id remounts it
@@ -316,9 +346,12 @@ export function CaptureView({ queue, send, screenshot, hotkey, onHotkeyHandled, 
           <input type="file" hidden onChange={(e) => pickFile(e.target.files?.[0])} />
         </label>
         <button onClick={insertTable}>Tabelle</button>
+        {vault && <button onClick={toVault} disabled={!text.trim()} title="Als Markdown in den MAGOS-Eingang (~/MAGOS/raw) legen">Vault</button>}
+        {openIcs && <button onClick={() => setTerminOpen(true)} disabled={!text.trim()} title="Notiz in einen Kalendertermin umwandeln">Termin</button>}
         <p className="status" role="status" aria-live="polite">{status}</p>
       </div>
     </section>
+      {terminOpen && <TerminModal text={text} onClose={() => setTerminOpen(false)} onCreate={(t) => void createTermin(t)} />}
       {pendingOpen && (
         <PendingModal
           pending={pending}

@@ -60,6 +60,12 @@ export const setCornerRadius = (px: number): Promise<void> => (inTauri() && Numb
 /** Shows the outbox folder in Finder. */
 export const revealOutbox = (): Promise<void> => invoke("outbox_reveal");
 
+/** Writes `<name>.md` into the MAGOS vault inbox (`~/MAGOS/raw/`, Rust `vault_write`); resolves to the file name actually used (a taken name gets `-2`, `-3`, ...). */
+export const vaultWrite = (name: string, markdown: string): Promise<string> => invoke<string>("vault_write", { name, markdown });
+
+/** Hands an iCalendar text to the default calendar app (Rust `open_ics`: temp file + `open`). */
+export const openIcs = (ics: string): Promise<void> => invoke("open_ics", { ics });
+
 /** Reply from the WhisperStorm Unix-socket control server. */
 export interface WhisperReply {
   ok: boolean;

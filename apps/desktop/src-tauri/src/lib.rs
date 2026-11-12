@@ -210,6 +210,67 @@ fn outbox_reveal(app: AppHandle) -> Result<(), String> {
     if status.success() { Ok(()) } else { Err(format!("open: {status}")) }
 }
 
+/// #15: the MAGOS vault inbox. Loose files in `~/MAGOS/raw/` are picked up by the MAGOS sorter (`vault:einsortieren`).
+fn vault_inbox() -> std::path::PathBuf {
+    std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join("MAGOS").join("raw")
+}
+
+/// Writes `<name>.md` and returns the file name used. The name is only [a-z0-9-]{1,80}, so it cannot leave the folder.
+/// Never overwrites (`create_new`; a taken name gets `-2`, `-3`, ...) and never creates the inbox: a missing vault is an error, not a new folder.
+fn vault_write_at(dir: &Path, name: &str, markdown: &str) -> Result<String, String> {
+    let ok = (1..=80).contains(&name.len()) && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    if !ok {
+        return Err("invalid note name".to_string());
+    }
+    if !dir.is_dir() {
+        return Err(format!("Vault-Eingang fehlt: {}", dir.display()));
+    }
+    for n in 1..=99 {
+        let file = if n == 1 { format!("{name}.md") } else { format!("{name}-{n}.md") };
+        let path = dir.join(&file);
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut f) => {
+                return match f.write_all(markdown.as_bytes()).and_then(|_| f.sync_all()) {
+                    Ok(()) => Ok(file),
+                    Err(e) => {
+                        let _ = std::fs::remove_file(&path); // no half note for the sorter
+                        Err(e.to_string())
+                    }
+                };
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Err("zu viele gleichnamige Notizen im Vault-Eingang".to_string())
+}
+
+#[tauri::command]
+fn vault_write(name: String, markdown: String) -> Result<String, String> {
+    vault_write_at(&vault_inbox(), &name, &markdown)
+}
+
+/// #16: an iCalendar text becomes a 0600 temp file. It stays until the OS clears the temp folder: the calendar app reads it after `open` has returned.
+fn ics_write_at(dir: &Path, ics: &str) -> Result<std::path::PathBuf, String> {
+    use std::os::unix::fs::OpenOptionsExt;
+    if !ics.starts_with("BEGIN:VCALENDAR") {
+        return Err("kein iCalendar".to_string());
+    }
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+    let file = dir.join(format!("pickynotes-termin-{}-{nanos}.ics", std::process::id()));
+    let mut f = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&file).map_err(|e| e.to_string())?;
+    f.write_all(ics.as_bytes()).and_then(|_| f.sync_all()).map_err(|e| e.to_string())?;
+    Ok(file)
+}
+
+/// Opens the event in the default calendar app, which asks before adding it.
+#[tauri::command]
+fn open_ics(ics: String) -> Result<(), String> {
+    let file = ics_write_at(&std::env::temp_dir(), &ics)?;
+    let status = std::process::Command::new("open").arg(&file).status().map_err(|e| e.to_string())?;
+    if status.success() { Ok(()) } else { Err(format!("open: {status}")) }
+}
+
 /// Second on-disk copy of every open note (one `<id>.json` per note id): same helpers and guarantees as the outbox (id whitelist, 0600, temp+rename).
 fn drafts_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("drafts"))
@@ -494,7 +555,7 @@ pub fn run() {
             Menu::with_items(h, &[&app, &edit])
         })
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![keychain_get, keychain_set, screenshot, whisperstorm, set_dock_visible, set_tray_visible, show_main_window, outbox_write, outbox_list, outbox_delete, outbox_reveal, drafts_write, drafts_list, drafts_delete, set_corner_radius, transcribe_audio])
+        .invoke_handler(tauri::generate_handler![keychain_get, keychain_set, screenshot, whisperstorm, set_dock_visible, set_tray_visible, show_main_window, outbox_write, outbox_list, outbox_delete, outbox_reveal, drafts_write, drafts_list, drafts_delete, set_corner_radius, transcribe_audio, vault_write, open_ics])
         .on_window_event(|window, event| {
             // Keep running in the background so the global hotkey can bring the window back.
             if let WindowEvent::CloseRequested { api, .. } = event {
@@ -656,6 +717,48 @@ mod tests {
 
     fn temp_dir(name: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("picky-outbox-{}-{name}", std::process::id()))
+    }
+
+    #[test]
+    fn vault_write_never_overwrites_never_creates_the_inbox_and_keeps_names_inside() {
+        let dir = temp_dir("vault");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(vault_write_at(&dir, "2026-11-12-0900-idee", "a").unwrap_err().contains("Vault-Eingang fehlt"));
+        assert!(!dir.exists(), "a missing vault is not created");
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(vault_write_at(&dir, "2026-11-12-0900-idee", "eins").unwrap(), "2026-11-12-0900-idee.md");
+        assert_eq!(vault_write_at(&dir, "2026-11-12-0900-idee", "zwei").unwrap(), "2026-11-12-0900-idee-2.md");
+        assert_eq!(std::fs::read_to_string(dir.join("2026-11-12-0900-idee.md")).unwrap(), "eins");
+        assert_eq!(std::fs::read_to_string(dir.join("2026-11-12-0900-idee-2.md")).unwrap(), "zwei");
+        for bad in ["", "../x", "a/b", "a.md", "A", "a b", ".", &"a".repeat(81)] {
+            assert!(vault_write_at(&dir, bad, "x").is_err(), "{bad:?}");
+        }
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Opt-in (`cargo test -- --ignored`): writes one note into the real `~/MAGOS/raw/` and takes exactly that file out again.
+    #[test]
+    #[ignore]
+    fn vault_inbox_on_this_mac_takes_a_note() {
+        let file = vault_write_at(&vault_inbox(), "pickynotes-selbsttest", "Selbsttest pickyNotes\n").unwrap();
+        let path = vault_inbox().join(&file);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "Selbsttest pickyNotes\n");
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn ics_file_is_written_0600_with_ics_extension_and_rejects_other_text() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_dir("ics");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ics = "BEGIN:VCALENDAR\r\nEND:VCALENDAR\r\n";
+        let file = ics_write_at(&dir, ics).unwrap();
+        assert_eq!(file.extension().unwrap(), "ics");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), ics);
+        assert_eq!(std::fs::metadata(&file).unwrap().permissions().mode() & 0o777, 0o600);
+        assert!(ics_write_at(&dir, "#!/bin/sh").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
