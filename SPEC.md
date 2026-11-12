@@ -144,6 +144,10 @@ Marker für die App: Linktext beginnt mit `🎙 ` und die Zeile direkt darunter 
 
 Sprache (Tauri): ein WhisperStorm-Socket (`~/Library/Application Support/WhisperStorm/control.sock`, Ordner 0700, Socket 0600, JSON-Zeilen, jede Antwort mit `\n` beendet; Anfrage max. 64 KB, 5 s Lese-Timeout) liefert `start` / `stop` / `status`. Der Rust-Command `whisperstorm(cmd)` macht den `UnixStream`-Roundtrip mit Read-/Write-Timeouts (5 s Request, 40 s für `start` – länger als die 30 s Startwartezeit in WhisperStorm, 120 s für `stop`-Transkript; der STT-Button (Speech-to-Text) zeigt „Starte Aufnahme…“ solange). Antwort: `{ok, phase, text?, error?}`. `start` startet die Aufnahme; `stop` wartet auf das Transkript und fügt es an der Cursorposition ein. Ohne laufendes WhisperStorm zeigt der UI-Status `WhisperStorm läuft nicht`. Gate: `node scripts/whisperstorm-status.mjs` öffnet die App, falls nötig, und antwortet mit der Status-Zeile; `WHISPERSTORM_SOCKET=<pfad>` zielt auf einen anderen Socket (Test mit Fake-Server: `src/lib/whisperstorm-status.test.ts`) und startet nichts.
 
+## Vault-Eingang
+
+Desktop sendet Notizen an `POST <MAGOS>/api/vault/eingang` (MAGOS#569), Einrichtung und Verhalten siehe README „Vault-Eingang (MAGOS)". Transport in Rust (`vault_post`, ureq), Token im Schlüsselbund, Zustand je Notiz in `picky.vaultState` (sha256, Status, Eingangs-ID). Nicht Teil davon: Termine (Kalender-App) und Mails (MAGOS#576).
+
 ## Offene Punkte / bewusste Abkürzungen
 
 - **Embedding-Wahl (Datenmodell):** `vector(384)` fest durch multilingual-e5-small (`claude -p` liefert keine Vektoren). Wechsel = neue Migration + Reindex. Bitte bestätigen.

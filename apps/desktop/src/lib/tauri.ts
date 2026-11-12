@@ -189,3 +189,13 @@ async function applyNow(prev: Hotkeys | null, next: Hotkeys): Promise<{ applied:
 /** macOS Dock icon (activation policy) and menu-bar icon; Rust applies and persists them. No-ops in the browser. */
 export const setDockVisible = (visible: boolean): Promise<void> => (inTauri() ? invoke("set_dock_visible", { visible }) : Promise.resolve());
 export const setTrayVisible = (visible: boolean): Promise<void> => (inTauri() ? invoke("set_tray_visible", { visible }) : Promise.resolve());
+
+/** MAGOS vault-inbox device token in the keychain (Rust `vault_token_*`). It can be set and checked, never read back into the webview. */
+export const vaultToken = {
+  has: async (): Promise<boolean> => (inTauri() ? invoke<boolean>("vault_token_present") : false),
+  set: (value: string): Promise<void> => invoke("vault_token_set", { value }),
+};
+
+/** POST to the vault inbox through Rust (adds the keychain token; MAGOS has no CORS headers, so the webview cannot fetch it). */
+export const vaultPost: import("./vault").VaultPost = (url, contentType, body) =>
+  blobToBase64(new Blob([body as BlobPart])).then((data) => invoke<{ status: number; body: string }>("vault_post", { url, contentType, data }));

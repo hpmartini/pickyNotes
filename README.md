@@ -68,6 +68,21 @@ bunx tsx packages/cli/src/index.ts search red car
 
 Docker Compose deployment, backups, S3 attachments, Whisper and all settings: see [SPEC.md](SPEC.md) (German).
 
+## Vault-Eingang (MAGOS)
+
+Notizen gehen per HTTP an den Vault-Eingang von MAGOS (`POST /api/vault/eingang`, Schnittstelle: `docs/vault-eingang.md` im MAGOS-Repo). Text als JSON, Anhänge (Sprachnotiz-Audio, Bilder) als Rohkörper. `app` = `pickynotes`, `ref` = Notiz-ID (Anhänge: `<Notiz-ID>/<Anhang-ID>`), `geraet` = Gerätename aus den Einstellungen. Der Einsortierer in MAGOS legt die Notiz danach ab (Cron, bis zu 20 Minuten).
+
+Einrichtung:
+
+1. Token anlegen (einmal angezeigt): `cd ~/PROJECTS/Magos && npm run vault:token -- neu pickynotes`
+2. pickyNotes → Einstellungen → „Vault-Eingang": MAGOS-URL (z. B. `http://100.x.y.z:8787`), Gerätename (1–60 Zeichen: Buchstaben, Ziffern, Leerzeichen, `. _ @ -`) und Token eintragen. Das Token liegt im macOS-Schlüsselbund (Eintrag `vault-token`), nie in Dateien oder Logs; die Oberfläche kann es setzen, aber nicht auslesen. Optional: „Sprachnotizen nach der Transkription automatisch senden".
+3. Notiz öffnen → „An Vault senden". Unter dem Status steht je Notiz: gesendet (Pfad + Eingangs-ID), in Warteschlange oder Fehler.
+4. In MAGOS unter SYSTEM → Ablage → „Eingang → Ablage" prüfen.
+
+Verhalten: Der Request läuft über Rust (`vault_post`), nicht über `fetch` (MAGOS sendet keine CORS-Header; das Token bleibt außerhalb des Webviews). 500, 503 und Netzfehler stellen den Text in eine lokale Warteschlange (Wiederholung beim Start und jede Minute). 401/403 zeigt „Token ungültig", 413 „Zu groß (max. 25 MB)"; beides wird nicht automatisch wiederholt. Dieselbe Notizversion (sha256 des Textes bzw. der Anhangsbytes) wird nicht doppelt gesendet; wer den Text ändert, sendet eine neue Version. Anhänge sind lokale `pending:`-Links; sie gehen als eigene Dateien in den Eingang, der Text behält den Link.
+
+Der ältere Knopf „Vault" (#15) schreibt weiter direkt nach `~/MAGOS/raw/` und ist unabhängig davon.
+
 ## Development
 
 ```sh
