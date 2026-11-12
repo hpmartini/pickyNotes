@@ -1,7 +1,8 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Dialog } from "./Dialog";
 import { clampTextWidth, DEFAULT_HOTKEYS, DEFAULT_SHORTCUTS, keydownToAccelerator, loadHotkeys, loadShell, loadShortcuts, saveHotkeys, saveShell, saveShortcuts, TEXT_WIDTH, type Hotkeys, type ShellPrefs, type Shortcuts } from "./lib/settings";
-import { applyHotkeys, setDockVisible, setTrayVisible, token, type HotkeyErrors } from "./lib/tauri";
+import { applyHotkeys, setDockVisible, setTrayVisible, token, vaultToken, type HotkeyErrors } from "./lib/tauri";
+import { loadVaultConfig, saveVaultConfig, validGeraet } from "./lib/vault";
 
 export const URL_KEY = "picky.url";
 
@@ -12,6 +13,7 @@ export function SettingsModal({ onClose, textWidth, onTextWidth }: { onClose: ()
   return (
     <Dialog title="Einstellungen" closeLabel="Einstellungen schließen" onClose={onClose}>
       <ServerForm />
+      <VaultForm />
       <HotkeySettings />
       <ShortcutSettings />
       <TextWidthSettings width={textWidth} onChange={onTextWidth} />
@@ -86,6 +88,41 @@ function ServerForm() {
       <label>Geräte-Token <input type="password" value={tok} onChange={(e) => setTok(e.target.value)} placeholder="leer = unverändert" autoComplete="off" /></label>
       <button type="submit">Speichern</button>
       {saved && <p role="status">Gespeichert (Token im Schlüsselbund).</p>}
+    </form>
+  );
+}
+
+/** Vault-Eingang: MAGOS URL, device name, device token (keychain; "leer = unverändert"), auto-send after transcription. */
+function VaultForm() {
+  const [cfg, setCfg] = useState(loadVaultConfig);
+  const [tok, setTok] = useState("");
+  const [hasTok, setHasTok] = useState<boolean | null>(null);
+  const [msg, setMsg] = useState("");
+  useEffect(() => void vaultToken.has().then(setHasTok, () => setHasTok(false)), []);
+  return (
+    <form
+      aria-label="Vault-Eingang"
+      onSubmit={async (e) => {
+        e.preventDefault();
+        if (cfg.url.trim() && !/^https?:\/\//.test(cfg.url.trim())) return setMsg("URL muss mit http:// oder https:// beginnen");
+        if (!validGeraet(cfg.geraet.trim())) return setMsg("Gerätename: 1–60 Zeichen (Buchstaben, Ziffern, Leerzeichen, . _ @ -)");
+        try {
+          if (tok) await vaultToken.set(tok.trim());
+        } catch (err) {
+          return setMsg(`Token nicht gespeichert (${err instanceof Error ? err.message : err})`);
+        }
+        saveVaultConfig(cfg);
+        if (tok) setHasTok(true);
+        setTok("");
+        setMsg("Gespeichert (Token im Schlüsselbund).");
+      }}
+    >
+      <label>Vault-URL (MAGOS) <input value={cfg.url} onChange={(e) => setCfg({ ...cfg, url: e.target.value })} placeholder="http://100.x.y.z:8787" /></label>
+      <label>Gerätename <input value={cfg.geraet} onChange={(e) => setCfg({ ...cfg, geraet: e.target.value })} placeholder="mac" /></label>
+      <label>Vault-Token <input type="password" value={tok} onChange={(e) => setTok(e.target.value)} placeholder={hasTok ? "hinterlegt – leer = unverändert" : "npm run vault:token -- neu pickynotes"} autoComplete="off" /></label>
+      <label><input type="checkbox" checked={cfg.auto} onChange={(e) => setCfg({ ...cfg, auto: e.target.checked })} /> Sprachnotizen nach der Transkription automatisch senden</label>
+      <button type="submit">Vault speichern</button>
+      {msg && <p role="status">{msg}</p>}
     </form>
   );
 }

@@ -4,7 +4,9 @@ import { CaptureView } from "./CaptureView";
 import { activeNote, addNote, closeNote, jumpNote, loadNotes, newNote, noteTitle, saveNotes, setNoteText, stepNote, type NotesState } from "./lib/notes";
 import { CaptureQueue } from "./lib/queue";
 import { jumpIndex, keydownToAccelerator, loadHotkeys, loadShortcuts, loadTextWidth, saveTextWidth } from "./lib/settings";
-import { applyHotkeys, inTauri, openIcs, revealOutbox, screenshot, setCornerRadius, tauriDrafts, tauriOutbox, token, vaultWrite } from "./lib/tauri";
+import { applyHotkeys, inTauri, openIcs, revealOutbox, screenshot, setCornerRadius, tauriDrafts, tauriOutbox, token, vaultPost, vaultToken, vaultWrite } from "./lib/tauri";
+import { getAttachment } from "./lib/attachments";
+import { loadVaultConfig, retryQueued, sendNote, vaultStatusLine, type VaultDeps, type VaultSync } from "./lib/vault";
 import { createDraftSaver, restoreDrafts } from "./lib/drafts";
 import { SearchView } from "./SearchView";
 import { SettingsModal, URL_KEY } from "./SettingsModal";
@@ -15,6 +17,13 @@ async function client(): Promise<PickyClient> {
   if (!baseUrl || !t) throw new Error("Bitte zuerst Server-URL und Token in den Einstellungen setzen.");
   return createClient({ baseUrl, token: t });
 }
+
+const vaultDeps: VaultDeps = { post: vaultPost, hasToken: vaultToken.has, attachment: getAttachment };
+const vaultSync: VaultSync = {
+  send: (id, text) => sendNote(loadVaultConfig(), vaultDeps, id, text),
+  auto: () => loadVaultConfig().auto,
+  status: (id) => vaultStatusLine(id),
+};
 
 const configured = async () => !!localStorage.getItem(URL_KEY) && !!(await token.get());
 
@@ -34,6 +43,14 @@ export function App() {
       window.removeEventListener("blur", off);
       void native?.then((unlisten) => unlisten?.());
     };
+  }, []);
+  // Queued vault sends (500, offline) go out again at start and every minute.
+  useEffect(() => {
+    if (!inTauri()) return;
+    const run = () => void retryQueued(loadVaultConfig(), vaultDeps).catch(() => undefined);
+    run();
+    const t = window.setInterval(run, 60_000);
+    return () => window.clearInterval(t);
   }, []);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -181,6 +198,7 @@ export function App() {
         send={send}
         screenshot={screenshot}
         vault={inTauri() ? vaultWrite : undefined}
+        vaultSync={inTauri() ? vaultSync : undefined}
         openIcs={inTauri() ? openIcs : undefined}
         configured={configured}
         onOpenAsNote={openAsNote}

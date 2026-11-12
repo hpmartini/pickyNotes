@@ -13,6 +13,7 @@ import { AUDIO_MAX_SECONDS } from "@pickynotes/shared";
 import { audioExt, audioInfo, audioLabel, formatDuration, pendingTranscriptions, transcribeBlock } from "./lib/audio-blocks";
 import { startRecorder, type Recorder } from "./lib/recorder";
 import { buildIcs, hasLocalAttachments, vaultFile, type Termin } from "./lib/export";
+import { subscribeVault, type VaultSync } from "./lib/vault";
 import { TerminModal } from "./TerminModal";
 
 const MAX_BYTES = 100 * 1024 * 1024; // sanity cap against freezing the webview; the server decides (413 above MAX_ATTACHMENT_MB without an object store)
@@ -23,6 +24,8 @@ interface Props {
   screenshot?: () => Promise<string | null>;
   /** Writes a Markdown file into the MAGOS vault inbox and returns the file name used (Tauri only). */
   vault?: (name: string, markdown: string) => Promise<string>;
+  /** Sends notes to the MAGOS vault inbox over HTTP (Tauri only). */
+  vaultSync?: VaultSync;
   /** Hands an iCalendar text to the calendar app (Tauri only). */
   openIcs?: (ics: string) => Promise<void>;
   /** Global hotkey request: focus the editor, and start/stop dictation when `toggle`. */
@@ -50,7 +53,7 @@ interface Props {
 
 const MISSING_CONFIG = "Server-URL/Token fehlen – Notiz liegt im Postausgang";
 
-export function CaptureView({ queue, send, screenshot, vault, openIcs, hotkey, onHotkeyHandled, notes, activeId, onChange, onSent, inert, configured, onOpenAsNote, onRevealOutbox, pendingOpen, onClosePending }: Props) {
+export function CaptureView({ queue, send, screenshot, vault, vaultSync, openIcs, hotkey, onHotkeyHandled, notes, activeId, onChange, onSent, inert, configured, onOpenAsNote, onRevealOutbox, pendingOpen, onClosePending }: Props) {
   const text = notes.find((n) => n.id === activeId)?.text ?? "";
   const notesRef = useRef(notes);
   notesRef.current = notes;
@@ -186,6 +189,21 @@ export function CaptureView({ queue, send, screenshot, vault, openIcs, hotkey, o
     }
   }
 
+  /** HTTP vault inbox: the note as it is now (plus its local attachments); it stays open. */
+  async function toVaultHttp(noteId = activeId, noteText = text) {
+    if (!vaultSync || !noteText.trim()) return;
+    setStatus("Sende an Vault…");
+    try {
+      setStatus((await vaultSync.send(noteId, noteText)).message);
+    } catch (e) {
+      setStatus(`Vault: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+
+  /** The vault line of the active note follows every send and retry. */
+  const [, setVaultTick] = useState(0);
+  useEffect(() => (vaultSync ? subscribeVault(() => setVaultTick((n) => n + 1)) : undefined), [vaultSync]);
+
   /** #16: the event goes to the calendar app as an .ics file; the note stays as it is. */
   async function createTermin(t: Termin) {
     setTerminOpen(false);
@@ -246,7 +264,13 @@ export function CaptureView({ queue, send, screenshot, vault, openIcs, hotkey, o
         const stamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}-${String(now.getHours()).padStart(2, "0")}${String(now.getMinutes()).padStart(2, "0")}`;
         const id = await insertAttachmentAt(view, view.state.selection.main.head, { name: `aufnahme-${stamp}.${audioExt(mime)}`, mime, bytes, label: audioLabel(now, seconds) });
         setStatus("");
-        void transcribeBlock(view, id);
+        const noteId = activeIdRef.current;
+        void transcribeBlock(view, id).then(() => {
+          // Auto-send only a transcript that worked; a failed one stays for the user (retry in the block).
+          if (!vaultSync?.auto() || audioInfo(id).error) return;
+          const doc = (activeIdRef.current === noteId ? getView()?.state.doc.toString() : undefined) ?? notesRef.current.find((n) => n.id === noteId)?.text;
+          if (doc?.trim()) void toVaultHttp(noteId, doc);
+        });
       } catch (e) {
         setStatus(e instanceof Error ? e.message : String(e));
       }
@@ -347,8 +371,10 @@ export function CaptureView({ queue, send, screenshot, vault, openIcs, hotkey, o
         </label>
         <button onClick={insertTable}>Tabelle</button>
         {vault && <button onClick={toVault} disabled={!text.trim()} title="Als Markdown in den MAGOS-Eingang (~/MAGOS/raw) legen">Vault</button>}
+        {vaultSync && <button onClick={() => void toVaultHttp()} disabled={!text.trim()} title="Notiz (und Anhänge) an den MAGOS-Vault-Eingang senden">An Vault senden</button>}
         {openIcs && <button onClick={() => setTerminOpen(true)} disabled={!text.trim()} title="Notiz in einen Kalendertermin umwandeln">Termin</button>}
         <p className="status" role="status" aria-live="polite">{status}</p>
+        {vaultSync?.status(activeId) && <p className="status vault-status" data-testid="vault-status">{vaultSync.status(activeId)}</p>}
       </div>
     </section>
       {terminOpen && <TerminModal text={text} onClose={() => setTerminOpen(false)} onCreate={(t) => void createTermin(t)} />}

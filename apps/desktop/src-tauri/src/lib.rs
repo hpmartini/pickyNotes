@@ -33,6 +33,68 @@ fn keychain_set(value: String) -> Result<(), String> {
     entry()?.set_password(&value).map_err(|e| e.to_string())
 }
 
+fn vault_entry() -> Result<keyring::Entry, String> {
+    keyring::Entry::new(KEYCHAIN_SERVICE, "vault-token").map_err(|e| e.to_string())
+}
+
+/// MAGOS vault-inbox device token (Schlüsselbund). The webview can set it and ask whether it exists, but never read it back.
+#[tauri::command]
+fn vault_token_set(value: String) -> Result<(), String> {
+    vault_entry()?.set_password(&value).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn vault_token_present() -> Result<bool, String> {
+    match vault_entry()?.get_password() {
+        Ok(_) => Ok(true),
+        Err(keyring::Error::NoEntry) => Ok(false),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[derive(serde::Serialize, Debug)]
+struct VaultReply {
+    status: u16,
+    body: String,
+}
+
+fn vault_reply(r: ureq::Response) -> Result<VaultReply, String> {
+    let status = r.status();
+    let body = r.into_string().map_err(|e| e.to_string())?;
+    Ok(VaultReply { status, body })
+}
+
+/// POST to the MAGOS vault inbox with the keychain token as Bearer. Done here, not with `fetch`: MAGOS sends no CORS headers, and the token stays out of the webview.
+/// HTTP error statuses (401, 413, 500, ...) are a normal reply; only transport failures are `Err`.
+fn vault_post_blocking(url: &str, content_type: &str, data_b64: &str) -> Result<VaultReply, String> {
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err("Vault-URL muss mit http:// oder https:// beginnen".to_string());
+    }
+    let token = match vault_entry()?.get_password() {
+        Ok(t) => t,
+        Err(keyring::Error::NoEntry) => return Err("Vault-Token fehlt".to_string()),
+        Err(e) => return Err(e.to_string()),
+    };
+    let bytes = STANDARD.decode(data_b64).map_err(|e| e.to_string())?;
+    let res = ureq::post(url)
+        .timeout(Duration::from_secs(60))
+        .set("Authorization", &format!("Bearer {token}"))
+        .set("Content-Type", content_type)
+        .send_bytes(&bytes);
+    match res {
+        Ok(r) => vault_reply(r),
+        Err(ureq::Error::Status(_, r)) => vault_reply(r),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+#[tauri::command]
+async fn vault_post(url: String, content_type: String, data: String) -> Result<VaultReply, String> {
+    tauri::async_runtime::spawn_blocking(move || vault_post_blocking(&url, &content_type, &data))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
 /// Interactive region/window capture via the system `screencapture`.
 /// Needs the Screen Recording permission on first use. Returns base64 PNG, or None if cancelled.
 #[tauri::command]
@@ -555,7 +617,7 @@ pub fn run() {
             Menu::with_items(h, &[&app, &edit])
         })
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![keychain_get, keychain_set, screenshot, whisperstorm, set_dock_visible, set_tray_visible, show_main_window, outbox_write, outbox_list, outbox_delete, outbox_reveal, drafts_write, drafts_list, drafts_delete, set_corner_radius, transcribe_audio, vault_write, open_ics])
+        .invoke_handler(tauri::generate_handler![keychain_get, keychain_set, screenshot, whisperstorm, set_dock_visible, set_tray_visible, show_main_window, outbox_write, outbox_list, outbox_delete, outbox_reveal, drafts_write, drafts_list, drafts_delete, set_corner_radius, transcribe_audio, vault_write, vault_token_set, vault_token_present, vault_post, open_ics])
         .on_window_event(|window, event| {
             // Keep running in the background so the global hotkey can bring the window back.
             if let WindowEvent::CloseRequested { api, .. } = event {
@@ -717,6 +779,11 @@ mod tests {
 
     fn temp_dir(name: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("picky-outbox-{}-{name}", std::process::id()))
+    }
+
+    #[test]
+    fn vault_post_rejects_a_non_http_url_before_touching_the_keychain() {
+        assert!(vault_post_blocking("file:///etc/passwd", "text/plain", "").unwrap_err().contains("http"));
     }
 
     #[test]
