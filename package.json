@@ -11,7 +11,7 @@
     "build": "bun run --workspaces --if-present build",
     "openapi": "bun run --filter @pickynotes/server openapi"
   },
-  "trustedDependencies": ["onnxruntime-node"],
+  "trustedDependencies": ["onnxruntime-node", "esbuild", "sharp"],
   "overrides": { "vite": "^6.0.0" },
   "devDependencies": {
     "@types/node": "^22.10.0",
